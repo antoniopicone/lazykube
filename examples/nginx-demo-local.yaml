@@ -1,0 +1,153 @@
+---
+# Esempio applicazione nginx con Ingress e certificato self-signed
+# Deploy: kubectl apply -f nginx-demo-local.yaml
+# Test: curl -k https://demo.k3cluster.local
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-demo
+  namespace: demo
+  labels:
+    app: nginx-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-demo
+  template:
+    metadata:
+      labels:
+        app: nginx-demo
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: nginx-html
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-html
+  namespace: demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>K3s Local Cluster Demo</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .container {
+                background: rgba(255,255,255,0.1);
+                padding: 30px;
+                border-radius: 10px;
+                backdrop-filter: blur(10px);
+            }
+            h1 { font-size: 2.5em; margin-bottom: 10px; }
+            .info { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .success { color: #90EE90; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎉 K3s HA Cluster (Local)</h1>
+            <p class="success">✓ Nginx deployment funzionante!</p>
+
+            <div class="info">
+                <h2>📋 Informazioni</h2>
+                <p><strong>Cluster:</strong> K3s HA con 3 master nodes</p>
+                <p><strong>Dominio:</strong> k3cluster.local</p>
+                <p><strong>Ingress:</strong> Traefik</p>
+                <p><strong>Certificati:</strong> Self-signed (cert-manager)</p>
+                <p><strong>LoadBalancer:</strong> MetalLB (Layer 2)</p>
+            </div>
+
+            <div class="info">
+                <h2>🔗 Links</h2>
+                <p>• <a href="https://traefik.k3cluster.local/dashboard/" style="color: #90EE90;">Traefik Dashboard</a></p>
+                <p>• <a href="https://demo.k3cluster.local" style="color: #90EE90;">Questa pagina</a></p>
+            </div>
+
+            <p style="margin-top: 30px; font-size: 0.9em; opacity: 0.8;">
+                Powered by K3s + Ansible
+            </p>
+        </div>
+    </body>
+    </html>
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-demo
+  namespace: demo
+spec:
+  selector:
+    app: nginx-demo
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: demo-tls
+  namespace: demo
+spec:
+  secretName: demo-tls
+  duration: 8760h  # 1 year
+  renewBefore: 360h  # 15 days
+  subject:
+    organizations:
+      - k3s-local
+  dnsNames:
+    - demo.k3cluster.local
+  issuerRef:
+    name: ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-demo
+  namespace: demo
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - demo.k3cluster.local
+    secretName: demo-tls
+  rules:
+  - host: demo.k3cluster.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-demo
+            port:
+              number: 80

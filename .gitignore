@@ -1,0 +1,25 @@
+# Cluster configuration with credentials
+.cluster-config
+
+# Backup files
+*.backup-*
+*.bak
+*.tmp
+
+# Ansible
+*.retry
+/tmp/
+.ansible/
+
+# Kubeconfig
+.kube/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# macOS
+.DS_Store

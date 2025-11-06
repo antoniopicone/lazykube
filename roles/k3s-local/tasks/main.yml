@@ -1,0 +1,277 @@
+---
+# Role - Installation of cluster K3s HA locale (without Tailscale)
+
+- name: Check if K3s è già installato
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Get primary network interface
+  ansible.builtin.shell: |
+    ip route get 8.8.8.8 | grep -oP 'dev \K\S+' | head -n1
+  register: primary_interface
+  changed_when: false
+  failed_when: false
+
+- name: Get node IP address from primary interface
+  ansible.builtin.shell: |
+    ip -4 addr show {{ primary_interface.stdout | default('eth0') }} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1
+  register: node_ip_result
+  changed_when: false
+  failed_when: false
+  when: primary_interface.rc == 0
+
+- name: Set node IP from inventory if auto-detection failed
+  ansible.builtin.set_fact:
+    node_ip: "{{ ansible_host }}"
+  when: primary_interface.rc != 0 or node_ip_result is not defined or node_ip_result.rc != 0 or node_ip_result.stdout == ""
+
+- name: Set node IP from command result
+  ansible.builtin.set_fact:
+    node_ip: "{{ node_ip_result.stdout }}"
+  when: node_ip_result is defined and node_ip_result.rc == 0 and node_ip_result.stdout != ""
+
+- name: Display node IP
+  ansible.builtin.debug:
+    msg: "Node {{ k3s_node_name }} will use IP: {{ node_ip }}"
+
+# Installazione primo master node
+- name: Install first K3s master with cluster-init
+  when:
+    - is_first_master | default(false)
+    - not k3s_binary.stat.exists
+  block:
+    - name: Download and install K3s (first master)
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | sh -s - server \
+          --cluster-init \
+          --disable traefik \
+          --disable servicelb \
+          --node-ip={{ node_ip }} \
+          --advertise-address={{ node_ip }} \
+          {% for ip in master_ips %}--tls-san={{ ip }} \
+          {% endfor %}--tls-san={{ domain }} \
+          --tls-san=kubernetes.{{ domain }} \
+          --tls-san=api.{{ domain }} \
+          --cluster-domain={{ domain }} \
+          --write-kubeconfig-mode 644
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for K3s to be ready
+      ansible.builtin.wait_for:
+        path: "{{ k3s_config_dir }}/k3s.yaml"
+        state: present
+        timeout: 120
+
+    - name: Get K3s node token
+      ansible.builtin.slurp:
+        src: "{{ k3s_data_dir }}/server/node-token"
+      register: k3s_token_encoded
+
+    - name: Set K3s token fact
+      ansible.builtin.set_fact:
+        k3s_node_token: "{{ k3s_token_encoded.content | b64decode | trim }}"
+
+    - name: Save token to local file
+      ansible.builtin.copy:
+        content: "{{ k3s_node_token }}"
+        dest: "/tmp/k3s-token-local"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Wait for K3s API to be ready
+      ansible.builtin.shell: |
+        kubectl get --raw='/readyz?verbose' 2>/dev/null || echo "waiting"
+      register: api_check
+      changed_when: false
+      until: api_check.rc == 0
+      retries: 30
+      delay: 5
+      environment:
+        KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+
+# Installazione master nodes successivi
+- name: Install additional K3s masters
+  when:
+    - not (is_first_master | default(false))
+    - not k3s_binary.stat.exists
+  block:
+    - name: Wait for token file to exist
+      ansible.builtin.wait_for:
+        path: "/tmp/k3s-token-local"
+        state: present
+        timeout: 300
+      delegate_to: localhost
+      become: false
+
+    - name: Read K3s token from local file
+      ansible.builtin.slurp:
+        src: "/tmp/k3s-token-local"
+      delegate_to: localhost
+      become: false
+      register: token_file
+
+    - name: Set token fact
+      ansible.builtin.set_fact:
+        k3s_join_token: "{{ token_file.content | b64decode | trim }}"
+
+    - name: Get first master IP
+      ansible.builtin.set_fact:
+        first_master_ip: "{{ master_ips[0] }}"
+
+    - name: Download and install K3s (additional masters)
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | sh -s - server \
+          --server https://{{ first_master_ip }}:{{ k3s_api_port }} \
+          --token {{ k3s_join_token }} \
+          --disable traefik \
+          --disable servicelb \
+          --node-ip={{ node_ip }} \
+          --advertise-address={{ node_ip }} \
+          {% for ip in master_ips %}--tls-san={{ ip }} \
+          {% endfor %}--tls-san={{ domain }} \
+          --tls-san=kubernetes.{{ domain }} \
+          --tls-san=api.{{ domain }} \
+          --cluster-domain={{ domain }} \
+          --write-kubeconfig-mode 644
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Wait for K3s to be ready
+      ansible.builtin.wait_for:
+        path: "{{ k3s_config_dir }}/k3s.yaml"
+        state: present
+        timeout: 120
+
+- name: Enable and start K3s service
+  ansible.builtin.systemd:
+    name: k3s
+    enabled: true
+    state: started
+
+- name: Wait for at least one node to be ready
+  ansible.builtin.shell: kubectl get nodes --no-headers 2>/dev/null | grep -c Ready || echo "0"
+  register: ready_nodes
+  changed_when: false
+  until: ready_nodes.stdout | int > 0
+  retries: 30
+  delay: 5
+  when: is_first_master | default(false)
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+
+- name: Display nodes status
+  ansible.builtin.shell: kubectl get nodes
+  register: nodes_status
+  changed_when: false
+  when: is_first_master | default(false)
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+
+- name: Show nodes
+  ansible.builtin.debug:
+    msg: "{{ nodes_status.stdout_lines }}"
+  when: is_first_master | default(false)
+
+# Fetch kubeconfig sul Mac locale (solo dal primo master)
+- name: Fetch kubeconfig to local machine
+  when: is_first_master | default(false)
+  block:
+    - name: Read kubeconfig
+      ansible.builtin.slurp:
+        src: "{{ k3s_config_dir }}/k3s.yaml"
+      register: kubeconfig_content
+
+    - name: Save kubeconfig locally
+      ansible.builtin.copy:
+        content: "{{ kubeconfig_content.content | b64decode }}"
+        dest: "{{ local_kubeconfig_path }}"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Update kubeconfig server to use HAProxy
+      ansible.builtin.replace:
+        path: "{{ local_kubeconfig_path }}"
+        regexp: 'https://127\.0\.0\.1:6443'
+        replace: 'https://{{ haproxy_ip }}:{{ k3s_api_port }}'
+      delegate_to: localhost
+      become: false
+
+    - name: Customize kubeconfig for k3s-local cluster
+      ansible.builtin.shell: |
+        # Rename cluster
+        sed -i.bak 's/^  name: default$/  name: k3s-local/' "{{ local_kubeconfig_path }}"
+        # Update context to reference k3s-local cluster and user
+        sed -i.bak 's/cluster: default/cluster: k3s-local/' "{{ local_kubeconfig_path }}"
+        sed -i.bak 's/user: default/user: k3s-local/' "{{ local_kubeconfig_path }}"
+        sed -i.bak 's/current-context: default/current-context: k3s-local/' "{{ local_kubeconfig_path }}"
+        # Remove certificate-authority-data (incompatible with insecure-skip-tls-verify)
+        sed -i.bak '/certificate-authority-data:/d' "{{ local_kubeconfig_path }}"
+        # Add insecure-skip-tls-verify after server line
+        sed -i.bak '/server: https:\/\/{{ haproxy_ip }}:{{ k3s_api_port }}/a\    insecure-skip-tls-verify: true' "{{ local_kubeconfig_path }}"
+        # Remove backup file
+        rm -f "{{ local_kubeconfig_path }}.bak"
+      delegate_to: localhost
+      become: false
+      args:
+        executable: /bin/bash
+
+    - name: Display kubeconfig info
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          ✅ Kubeconfig k3s-local generato!
+          ========================================
+
+          📁 Percorso: {{ local_kubeconfig_path }}
+
+          ✅ Cluster name: k3s-local
+          ✅ HAProxy LoadBalancer: {{ haproxy_ip }}:{{ k3s_api_port }}
+          ✅ insecure-skip-tls-verify: true (evita warning TLS)
+          ✅ Context: k3s-local
+          ✅ User: k3s-local
+
+          ========================================
+          📋 MERGE CON KUBECONFIG ESISTENTE
+          ========================================
+
+          Opzione 1 - Merge permanente (raccomandato):
+          ------------------------------------------------
+          # Backup del kubeconfig attuale
+          cp ~/.kube/config ~/.kube/config.backup-$(date +%Y%m%d-%H%M%S)
+
+          # Merge e salva
+          KUBECONFIG=~/.kube/config:{{ local_kubeconfig_path }} kubectl config view --flatten > ~/.kube/config-merged
+          mv ~/.kube/config-merged ~/.kube/config
+
+          # Seleziona il nuovo cluster
+          kubectl config use-context k3s-local
+
+          # Rimuovi il context "default" duplicato (se presente)
+          kubectl config delete-context default 2>/dev/null || true
+
+          # Verifica
+          kubectl get nodes
+
+          Opzione 2 - Merge temporaneo (per testing):
+          ------------------------------------------------
+          export KUBECONFIG=~/.kube/config:{{ local_kubeconfig_path }}
+          kubectl config use-context k3s-local
+          kubectl get nodes
+
+          ========================================
+          🔧 TROUBLESHOOTING
+          ========================================
+
+          Se vedi errore "specifying a root certificates file with the insecure flag is not allowed":
+          kubectl config unset clusters.k3s-local.certificate-authority-data
+
+          Per switchare tra cluster:
+          kubectl config use-context default      # Cluster precedente
+          kubectl config use-context k3s-local    # Cluster k3s-local
+
+          Per vedere tutti i context disponibili:
+          kubectl config get-contexts

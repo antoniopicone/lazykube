@@ -1,0 +1,76 @@
+---
+# Role: haproxy-local - HAProxy Load Balancer per K3s cluster
+
+- name: Install HAProxy
+  ansible.builtin.package:
+    name:
+      - haproxy
+      - rsyslog
+    state: present
+  become: true
+
+- name: Ensure rsyslog is running
+  ansible.builtin.service:
+    name: rsyslog
+    state: started
+    enabled: true
+  become: true
+
+- name: Configure HAProxy for K3s cluster
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    validate: haproxy -c -f %s
+  become: true
+  notify: restart haproxy
+
+- name: Enable and start HAProxy
+  ansible.builtin.service:
+    name: haproxy
+    state: started
+    enabled: true
+  become: true
+
+- name: Verify HAProxy service is running
+  ansible.builtin.shell: systemctl is-active haproxy
+  register: haproxy_status
+  changed_when: false
+  failed_when: haproxy_status.stdout != "active"
+  become: true
+
+- name: Display HAProxy installation summary
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      HAProxy Load Balancer installato!
+      ========================================
+
+      HAProxy IP: {{ ansible_host }}
+
+      Porte configurate:
+      - 6443: K3s API Server (load balanced su 3 masters)
+      - 80: HTTP (NodePort → Traefik 32080)
+      - 443: HTTPS (NodePort → Traefik 32443)
+      - {{ haproxy_stats_port }}: HAProxy Stats Dashboard
+
+      Backend servers:
+      {% for ip in master_ips[:3] %}
+      - {{ ip }}
+      {% endfor %}
+
+      Stats Dashboard: http://{{ ansible_host }}:{{ haproxy_stats_port }}/stats
+      Credentials: {{ haproxy_stats_user }} / {{ haproxy_stats_password }}
+
+      ⚠️  IMPORTANTE:
+      1. Aggiorna kubeconfig per usare HAProxy:
+         kubectl config set-cluster default --server=https://{{ ansible_host }}:6443
+
+      2. Aggiorna DNS locale per puntare a HAProxy:
+         {{ ansible_host }}  traefik.{{ domain }}
+         {{ ansible_host }}  *.{{ domain }}
+
+      3. MetalLB LoadBalancer IP ({{ traefik_loadbalancer_ip }}) NON è più necessario
+         per accesso esterno. Usa HAProxy come entry point unico.

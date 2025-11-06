@@ -1,0 +1,14 @@
+---
+# Handlers for haproxy-local role
+
+- name: restart haproxy
+  ansible.builtin.service:
+    name: haproxy
+    state: restarted
+  become: true
+
+- name: reload haproxy
+  ansible.builtin.service:
+    name: haproxy
+    state: reloaded
+  become: true

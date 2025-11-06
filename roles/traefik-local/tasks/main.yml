@@ -1,0 +1,244 @@
+---
+# Role: traefik-local - Traefik Ingress Controller for local network
+
+- name: Install Python Kubernetes dependencies via apt
+  ansible.builtin.package:
+    name:
+      - python3-pip
+      - python3-kubernetes
+      - python3-yaml
+    state: present
+  become: true
+
+- name: Check if Helm is installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/helm
+  register: helm_binary
+
+- name: Install Helm
+  ansible.builtin.shell: |
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  become: true
+  when: not helm_binary.stat.exists
+
+- name: Add Traefik Helm repository
+  kubernetes.core.helm_repository:
+    name: traefik
+    repo_url: https://traefik.github.io/charts
+  when: is_first_master | default(false)
+
+- name: Create Traefik namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ traefik_namespace }}"
+  when: is_first_master | default(false)
+
+- name: Install Traefik via Helm
+  kubernetes.core.helm:
+    name: traefik
+    chart_ref: traefik/traefik
+    release_namespace: "{{ traefik_namespace }}"
+    create_namespace: true
+    values:
+      service:
+        type: LoadBalancer
+        annotations:
+          metallb.universe.tf/address-pool: local-pool
+        spec:
+          loadBalancerIP: "{{ traefik_loadbalancer_ip }}"
+      ports:
+        web:
+          port: 80
+          exposedPort: 80
+          nodePort: "{{ traefik_http_nodeport }}"
+        websecure:
+          port: 443
+          exposedPort: 443
+          nodePort: "{{ traefik_https_nodeport }}"
+      ingressClass:
+        enabled: true
+        isDefaultClass: true
+      providers:
+        kubernetesCRD:
+          enabled: true
+          allowCrossNamespace: true
+        kubernetesIngress:
+          enabled: true
+          allowExternalNameServices: true
+      api:
+        dashboard: true
+        insecure: false  # Dashboard accessibile solo via Ingress con auth
+      logs:
+        general:
+          level: INFO
+        access:
+          enabled: true
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+  when: is_first_master | default(false)
+
+- name: Wait for Traefik to be ready
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ traefik_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=traefik
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: 180
+  when: is_first_master | default(false)
+
+- name: Get Traefik service details
+  kubernetes.core.k8s_info:
+    kind: Service
+    name: traefik
+    namespace: "{{ traefik_namespace }}"
+  register: traefik_service
+  when: is_first_master | default(false)
+
+- name: Extract service info
+  ansible.builtin.set_fact:
+    actual_http_nodeport: "{{ traefik_service.resources[0].spec.ports | selectattr('name', 'equalto', 'web') | map(attribute='nodePort') | first }}"
+    actual_https_nodeport: "{{ traefik_service.resources[0].spec.ports | selectattr('name', 'equalto', 'websecure') | map(attribute='nodePort') | first }}"
+    external_ip: "{{ traefik_service.resources[0].status.loadBalancer.ingress[0].ip | default('pending') }}"
+  when: is_first_master | default(false)
+
+- name: Configure IngressClass
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: IngressClass
+      metadata:
+        name: traefik
+        annotations:
+          ingressclass.kubernetes.io/is-default-class: "true"
+      spec:
+        controller: traefik.io/ingress-controller
+  when: is_first_master | default(false)
+
+- name: Create wildcard Certificate for *.k3cluster.local
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: wildcard-k3cluster-local
+        namespace: "{{ traefik_namespace }}"
+      spec:
+        secretName: wildcard-k3cluster-local-tls
+        duration: 8760h  # 1 year
+        renewBefore: 360h  # 15 days
+        subject:
+          organizations:
+            - "{{ cluster_name }}"
+        commonName: "*.{{ domain }}"
+        dnsNames:
+          - "{{ domain }}"
+          - "*.{{ domain }}"
+        issuerRef:
+          name: ca-issuer
+          kind: ClusterIssuer
+          group: cert-manager.io
+  when: is_first_master | default(false)
+
+- name: Create Certificate for Traefik Dashboard
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: traefik-dashboard-tls
+        namespace: "{{ traefik_namespace }}"
+      spec:
+        secretName: traefik-dashboard-tls
+        duration: 8760h  # 1 year
+        renewBefore: 360h  # 15 days
+        subject:
+          organizations:
+            - "{{ cluster_name }}"
+        dnsNames:
+          - "traefik.{{ domain }}"
+        issuerRef:
+          name: ca-issuer
+          kind: ClusterIssuer
+          group: cert-manager.io
+  when: is_first_master | default(false)
+
+- name: Create IngressRoute for Traefik Dashboard
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: traefik-dashboard
+        namespace: "{{ traefik_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        routes:
+          - match: "Host(`traefik.{{ domain }}`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))"
+            kind: Rule
+            services:
+              - name: api@internal
+                kind: TraefikService
+        tls:
+          secretName: traefik-dashboard-tls
+  when: is_first_master | default(false)
+
+- name: Wait for certificates
+  kubernetes.core.k8s_info:
+    kind: Certificate
+    name: "{{ item }}"
+    namespace: "{{ traefik_namespace }}"
+  register: cert_status
+  until: cert_status.resources[0].status.conditions[0].status == "True"
+  retries: 30
+  delay: 5
+  loop:
+    - traefik-dashboard-tls
+    - wildcard-k3cluster-local
+  when: is_first_master | default(false)
+  ignore_errors: true
+
+- name: Display Traefik installation summary
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      Traefik Ingress Controller installato!
+      ========================================
+
+      LoadBalancer IP: {{ external_ip }}
+      HTTP NodePort: {{ actual_http_nodeport }}
+      HTTPS NodePort: {{ actual_https_nodeport }}
+
+      Dashboard: https://traefik.{{ domain }}/dashboard/
+
+      Certificati disponibili:
+      - traefik-dashboard-tls: Per dashboard Traefik
+      - wildcard-k3cluster-local-tls: Wildcard per *.{{ domain }}
+
+      ⚠️  SETUP DNS LOCALE RICHIESTO:
+      Per accedere ai servizi tramite dominio, aggiungi al tuo /etc/hosts:
+
+      {{ external_ip }}  traefik.{{ domain }}
+      {{ external_ip }}  myapp.{{ domain }}
+
+      Oppure configura un DNS server locale (dnsmasq).
+
+      Certificati self-signed: Accetta l'eccezione nel browser o importa la CA.
+  when: is_first_master | default(false)

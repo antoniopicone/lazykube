@@ -1,0 +1,276 @@
+---
+# Playbook for local K3s HA cluster installation with dedicated HAProxy
+# Run with: ansible-playbook -i inventories/hosts.yml playbooks/install-cluster-local.yml
+
+- name: Pre-flight checks - HAProxy
+  hosts: haproxy
+  gather_facts: true
+  tasks:
+    - name: Verify SSH connectivity to HAProxy
+      ansible.builtin.ping:
+
+    - name: Display HAProxy node information
+      ansible.builtin.debug:
+        msg: |
+          HAProxy Node: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+
+- name: Pre-flight checks - K3s Masters
+  hosts: k3s_masters
+  gather_facts: true
+  tasks:
+    - name: Verify SSH connectivity
+      ansible.builtin.ping:
+
+    - name: Get node IP addresses
+      ansible.builtin.shell: |
+        ip -4 addr show | grep inet | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1
+      register: node_ip
+      changed_when: false
+
+    - name: Display node information
+      ansible.builtin.debug:
+        msg: |
+          Node: {{ k3s_node_name }}
+          IP: {{ ansible_host }}
+          Detected IP: {{ node_ip.stdout }}
+          Is First Master: {{ is_first_master | default(false) }}
+
+    - name: Check if required packages are available
+      ansible.builtin.package_facts:
+        manager: auto
+
+- name: Install HAProxy Load Balancer
+  hosts: haproxy
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - role: haproxy-local
+
+- name: Install K3s HA Cluster (Local Network)
+  hosts: k3s_masters
+  become: true
+  serial: 1
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - role: k3s-local
+
+- name: Configure kubectl on Mac
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Display kubectl configuration
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          K3s Cluster installed successfully!
+          ========================================
+
+          HAProxy Load Balancer: {{ haproxy_ip }}
+
+          To use kubectl from Mac, run:
+
+          export KUBECONFIG={{ local_kubeconfig_path }}
+          kubectl config set-cluster default --server=https://{{ haproxy_ip }}:6443
+          kubectl cluster-info
+          kubectl get nodes
+
+          Verify that all nodes are Ready:
+          kubectl get nodes -o wide
+
+          ✅ HAProxy load balancing active for:
+          - K3s API (6443)
+          - HTTP (80 → NodePort 32080)
+          - HTTPS (443 → NodePort 32443)
+          - etcd (2379, 2380)
+
+- name: Install MetalLB LoadBalancer
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  roles:
+    - role: metallb-local
+
+- name: Install cert-manager with self-signed certificates
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  roles:
+    - role: cert-manager-local
+
+- name: Install Traefik Ingress Controller
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  roles:
+    - role: traefik-local
+
+- name: Setup local DNS resolution
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Get Traefik LoadBalancer IP
+      ansible.builtin.shell: |
+        export KUBECONFIG={{ local_kubeconfig_path }}
+        kubectl get svc -n traefik traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: traefik_ip
+      changed_when: false
+      failed_when: false
+      become: false
+
+    - name: Display DNS configuration instructions
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          LOCAL DNS CONFIGURATION
+          ========================================
+
+          ⚠️  IMPORTANT: Use HAProxy as entry point for all services!
+
+          To access services via domain name, add these lines
+          to your Mac's /etc/hosts file:
+
+          {{ haproxy_ip }}  traefik.{{ domain }}
+          {{ haproxy_ip }}  *.{{ domain }}
+
+          Example command:
+          sudo bash -c 'cat >> /etc/hosts << EOF
+
+          # K3s Local Cluster (via HAProxy)
+          {{ haproxy_ip }}  traefik.{{ domain }}
+          {{ haproxy_ip }}  myapp.{{ domain }}
+          {{ haproxy_ip }}  demo.{{ domain }}
+          EOF'
+
+          HAProxy manages:
+          - HTTP/HTTPS to Traefik NodePorts
+          - K3s API load balancing
+          - etcd access (if needed)
+
+          HAProxy Stats: http://{{ haproxy_ip }}:{{ haproxy_stats_port }}/stats
+
+          ⚠️  MetalLB LoadBalancer IP ({{ traefik_ip.stdout | default(traefik_loadbalancer_ip) }})
+          is only for internal cluster traffic. Use {{ haproxy_ip }} for external access!
+
+- name: Final verification and summary
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  tasks:
+    - name: Get all nodes
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: nodes
+
+    - name: Get MetalLB pods
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: metallb-system
+      register: metallb_pods
+
+    - name: Get Traefik service
+      kubernetes.core.k8s_info:
+        kind: Service
+        name: traefik
+        namespace: traefik
+      register: traefik_svc
+
+    - name: Get ClusterIssuers
+      kubernetes.core.k8s_info:
+        kind: ClusterIssuer
+      register: issuers
+
+    - name: Get Certificates
+      kubernetes.core.k8s_info:
+        kind: Certificate
+        namespace: traefik
+      register: certs
+
+    - name: Display final summary
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          LOCAL K3S HA CLUSTER INSTALLATION COMPLETED!
+          ============================================================
+
+          CLUSTER NODES:
+          {% for node in nodes.resources %}
+          - {{ node.metadata.name }}: {{ node.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first }}
+          {% endfor %}
+
+          NETWORK:
+          - Master Nodes: {{ master_ips[:3] | join(', ') }}
+          - HAProxy Load Balancer: {{ haproxy_ip }}
+          - Domain: {{ domain }}
+
+          METALLB:
+          - Controller: {{ metallb_pods.resources | selectattr('metadata.labels.component', 'equalto', 'controller') | list | length }} pod(s)
+          - Speaker: {{ metallb_pods.resources | selectattr('metadata.labels.component', 'equalto', 'speaker') | list | length }} pod(s)
+          - IP Pool: {{ metallb_ip_range }}
+
+          TRAEFIK:
+          - LoadBalancer IP: {{ traefik_svc.resources[0].status.loadBalancer.ingress[0].ip | default('pending') }}
+          - Dashboard: https://traefik.{{ domain }}/dashboard/
+
+          CERT-MANAGER:
+          {% for issuer in issuers.resources %}
+          - {{ issuer.metadata.name }}: {{ issuer.status.conditions[0].status }}
+          {% endfor %}
+
+          CERTIFICATES:
+          {% for cert in certs.resources %}
+          - {{ cert.metadata.name }}: {{ cert.status.conditions[0].status | default('Pending') }}
+          {% endfor %}
+
+          ============================================================
+          NEXT STEPS:
+          ============================================================
+
+          1. Configure kubectl on Mac to use HAProxy:
+             export KUBECONFIG={{ local_kubeconfig_path }}
+             kubectl config set-cluster default --server=https://{{ haproxy_ip }}:6443
+
+          2. Verify cluster:
+             kubectl get nodes
+             kubectl get pods -A
+
+          3. Configure local DNS (/etc/hosts) to use HAProxy:
+             sudo bash -c 'echo "{{ haproxy_ip }}  traefik.{{ domain }}" >> /etc/hosts'
+
+          4. Import CA certificate into system (to avoid SSL warnings):
+             sudo security add-trusted-cert -d -r trustRoot \
+               -k /Library/Keychains/System.keychain \
+               ~/.kube/k3s-local-ca.crt
+
+          5. Verify HAProxy stats:
+             open http://{{ haproxy_ip }}:{{ haproxy_stats_port }}/stats
+
+          6. Access Traefik dashboard (via HAProxy):
+             open https://traefik.{{ domain }}/dashboard/
+             (accept certificate exception or import the CA)
+
+          7. Test demo application deployment:
+             kubectl create namespace demo
+             kubectl apply -f ../examples/nginx-demo-local.yaml
+
+          ⚠️  REMEMBER: All services must be accessible via {{ haproxy_ip }}
+
+          ============================================================

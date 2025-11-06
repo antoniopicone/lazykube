@@ -1,0 +1,117 @@
+---
+# Role - Installation of MetalLB for local network
+
+- name: Install Python Kubernetes dependencies via apt
+  ansible.builtin.package:
+    name:
+      - python3-pip
+      - python3-kubernetes
+      - python3-yaml
+    state: present
+  become: true
+
+- name: Install MetalLB
+  kubernetes.core.k8s:
+    state: present
+    src: "https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml"
+  when: is_first_master | default(false)
+
+- name: Wait for MetalLB pods to be ready
+  ansible.builtin.shell: |
+    kubectl get pods -n metallb-system --no-headers 2>/dev/null | grep -E 'controller|speaker' | grep -c Running || echo "0"
+  register: metallb_pods_ready
+  until: metallb_pods_ready.stdout | int >= 2
+  retries: 30
+  delay: 5
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  when: is_first_master | default(false)
+  changed_when: false
+
+- name: Remove MetalLB webhooks
+  kubernetes.core.k8s:
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    state: absent
+    wait: false
+  loop:
+    - { kind: "ValidatingWebhookConfiguration", name: "metallb-webhook-configuration" }
+    - { kind: "MutatingWebhookConfiguration", name: "metallb-webhook-configuration" }
+  when: is_first_master | default(false)
+  ignore_errors: true
+
+- name: Patch MetalLB controller to tolerate all taints
+  kubernetes.core.k8s:
+    state: patched
+    kind: Deployment
+    name: controller
+    namespace: metallb-system
+    definition:
+      spec:
+        template:
+          spec:
+            tolerations:
+              - operator: Exists
+  when: is_first_master | default(false)
+
+- name: Patch MetalLB speaker to tolerate all taints
+  kubernetes.core.k8s:
+    state: patched
+    kind: DaemonSet
+    name: speaker
+    namespace: metallb-system
+    definition:
+      spec:
+        template:
+          spec:
+            tolerations:
+              - operator: Exists
+  when: is_first_master | default(false)
+
+- name: Create MetalLB IPAddressPool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: local-pool
+        namespace: metallb-system
+      spec:
+        addresses:
+          - "{{ metallb_ip_range }}"
+  when: is_first_master | default(false)
+
+- name: Create MetalLB L2Advertisement
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: local-advert
+        namespace: metallb-system
+      spec:
+        ipAddressPools:
+          - local-pool
+  when: is_first_master | default(false)
+
+- name: Verify MetalLB installation
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: metallb-system
+    label_selectors:
+      - app=metallb
+  register: metallb_pods
+  when: is_first_master | default(false)
+
+- name: Display MetalLB status
+  ansible.builtin.debug:
+    msg: |
+      MetalLB installato con successo!
+      Pods: {{ metallb_pods.resources | length }}
+      IP Pool: {{ metallb_ip_range }}
+
+      ⚠️  NOTA: MetalLB Layer 2 funziona sulla rete locale.
+      Assicurati che il range IP sia nella stessa subnet delle VM.
+  when: is_first_master | default(false)

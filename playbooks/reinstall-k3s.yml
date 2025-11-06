@@ -1,0 +1,62 @@
+---
+# Playbook to reinstall K3s with correct certificates including HAProxy IP
+# Run with: ansible-playbook -i inventories/hosts.yml playbooks/reinstall-k3s.yml
+
+- name: Uninstall K3s from all masters
+  hosts: k3s_masters
+  become: true
+  tasks:
+    - name: Check if K3s uninstall script exists
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_uninstall
+
+    - name: Uninstall K3s
+      ansible.builtin.shell: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_uninstall.stat.exists
+
+    - name: Clean up K3s directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher/k3s
+        - /var/lib/rancher/k3s
+        - /tmp/k3s-token-local
+
+- name: Reinstall K3s HA Cluster
+  hosts: k3s_masters
+  become: true
+  serial: 1
+  vars_files:
+    - ../group_vars/all.yml
+  roles:
+    - role: k3s-local
+
+- name: Display completion message
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Show status
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          K3s reinstalled with correct certificates!
+          ========================================
+
+          The TLS certificate now includes:
+          {% for ip in master_ips %}
+          - {{ ip }}
+          {% endfor %}
+          - {{ domain }}
+          - kubernetes.{{ domain }}
+          - api.{{ domain }}
+
+          Test connection without TLS warning:
+          export KUBECONFIG=~/.kube/config-k3s-local
+          kubectl get nodes
+
+          Note: MetalLB, cert-manager and Traefik must be reinstalled:
+          ansible-playbook -i inventories/hosts.yml playbooks/install-cluster-local.yml --skip-tags k3s

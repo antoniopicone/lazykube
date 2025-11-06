@@ -1,0 +1,101 @@
+---
+# Playbook to regenerate K3s certificates including HAProxy IP
+# Run with: ansible-playbook -i inventories/hosts.yml playbooks/regenerate-k3s-certs.yml
+
+- name: Regenerate K3s certificates with HAProxy IP
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Stop K3s on all masters
+      ansible.builtin.service:
+        name: k3s
+        state: stopped
+      delegate_to: "{{ item }}"
+      loop:
+        - master1
+        - master2
+        - master3
+
+    - name: Backup existing certificates
+      ansible.builtin.shell: |
+        mkdir -p /var/lib/rancher/k3s/server/tls-backup-$(date +%Y%m%d-%H%M%S)
+        cp -r /var/lib/rancher/k3s/server/tls/* /var/lib/rancher/k3s/server/tls-backup-$(date +%Y%m%d-%H%M%S)/
+      args:
+        creates: /var/lib/rancher/k3s/server/tls-backup-*
+
+    - name: Remove old certificates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/rancher/k3s/server/tls/server-ca.crt
+        - /var/lib/rancher/k3s/server/tls/server-ca.key
+        - /var/lib/rancher/k3s/server/tls/serving-kube-apiserver.crt
+        - /var/lib/rancher/k3s/server/tls/serving-kube-apiserver.key
+
+    - name: Update K3s config to include HAProxy IP
+      ansible.builtin.lineinfile:
+        path: /etc/rancher/k3s/config.yaml
+        line: "tls-san: {{ haproxy_ip }}"
+        create: yes
+
+    - name: Start K3s on first master (will regenerate certs)
+      ansible.builtin.service:
+        name: k3s
+        state: started
+
+    - name: Wait for K3s API to be ready
+      ansible.builtin.wait_for:
+        port: 6443
+        host: localhost
+        timeout: 120
+
+    - name: Start K3s on other masters
+      ansible.builtin.service:
+        name: k3s
+        state: started
+      delegate_to: "{{ item }}"
+      loop:
+        - master2
+        - master3
+
+    - name: Verify all nodes are ready
+      ansible.builtin.shell: |
+        kubectl get nodes --no-headers | grep -c Ready
+      register: ready_nodes
+      until: ready_nodes.stdout | int == 3
+      retries: 30
+      delay: 5
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Fetch new kubeconfig
+      ansible.builtin.fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: ~/.kube/config-k3s-local
+        flat: yes
+
+    - name: Update kubeconfig server to use HAProxy
+      ansible.builtin.replace:
+        path: ~/.kube/config-k3s-local
+        regexp: 'https://127\.0\.0\.1:6443'
+        replace: 'https://{{ haproxy_ip }}:{{ k3s_api_port }}'
+      delegate_to: localhost
+      become: false
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          K3s certificates regenerated successfully!
+          ========================================
+
+          HAProxy IP ({{ haproxy_ip }}) now included in TLS certificate.
+
+          Test connection:
+          export KUBECONFIG=~/.kube/config-k3s-local
+          kubectl get nodes
+
+          No TLS warnings should appear.
