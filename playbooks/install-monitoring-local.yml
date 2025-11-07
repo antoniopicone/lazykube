@@ -1,0 +1,244 @@
+---
+# Playbook for installing Prometheus + Grafana monitoring stack on local K3s cluster
+# Prerequisites: K3s cluster must be running and kubectl configured
+# Run with: ansible-playbook -i inventories/hosts.yml playbooks/install-monitoring-local.yml
+
+- name: Pre-flight checks
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  tasks:
+    - name: Verify SSH connectivity
+      ansible.builtin.ping:
+
+    - name: Check if K3s is running
+      ansible.builtin.systemd:
+        name: k3s
+        state: started
+      check_mode: true
+      register: k3s_status
+
+    - name: Verify kubectl access
+      ansible.builtin.command: kubectl cluster-info
+      changed_when: false
+      register: cluster_info
+
+    - name: Display cluster information
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          K3s Cluster Status
+          ========================================
+          {{ cluster_info.stdout }}
+
+    - name: Check if Helm is installed
+      ansible.builtin.command: helm version --short
+      changed_when: false
+      register: helm_version
+      failed_when: false
+
+    - name: Install Helm if not present
+      ansible.builtin.shell: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      when: helm_version.rc != 0
+      become: true
+
+    - name: Verify Traefik is running
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: traefik
+        name: traefik
+      register: traefik_status
+
+    - name: Fail if Traefik is not running
+      ansible.builtin.fail:
+        msg: "Traefik must be running before installing monitoring stack. Run install-cluster-local.yml first."
+      when: traefik_status.resources | length == 0
+
+    - name: Verify cert-manager is running
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: cert-manager
+      register: cert_manager_status
+
+    - name: Warn if cert-manager is not running
+      ansible.builtin.debug:
+        msg: "WARNING: cert-manager is not running. HTTPS certificates will not work."
+      when: cert_manager_status.resources | length == 0
+
+- name: Install Prometheus + Grafana monitoring stack
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  roles:
+    - role: prometheus-grafana-local
+
+- name: Configure monitoring access from Mac
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Get Grafana admin password
+      ansible.builtin.shell: |
+        export KUBECONFIG={{ local_kubeconfig_path }}
+        kubectl get secret -n monitoring kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+      register: grafana_password
+      changed_when: false
+      become: false
+
+    - name: Display DNS configuration instructions
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          MONITORING STACK INSTALLATION COMPLETED!
+          ========================================
+
+          SERVICES INSTALLED:
+          - Prometheus (metrics collection)
+          - Grafana (visualization)
+          - AlertManager (alerting)
+          - Node Exporter (node metrics)
+          - kube-state-metrics (K8s object metrics)
+
+          ACCESS URLS (via HAProxy):
+          - Prometheus: https://prometheus.{{ domain }}
+          - Grafana: https://grafana.{{ domain }}
+          - AlertManager: https://alertmanager.{{ domain }}
+
+          GRAFANA CREDENTIALS:
+          - Username: admin
+          - Password: {{ grafana_password.stdout }}
+
+          ========================================
+          DNS CONFIGURATION
+          ========================================
+
+          Add these entries to /etc/hosts on your Mac:
+
+          sudo bash -c 'cat >> /etc/hosts << EOF
+
+          # K3s Monitoring Stack (via HAProxy)
+          {{ haproxy_ip }}  prometheus.{{ domain }}
+          {{ haproxy_ip }}  grafana.{{ domain }}
+          {{ haproxy_ip }}  alertmanager.{{ domain }}
+          EOF'
+
+          ========================================
+          NEXT STEPS
+          ========================================
+
+          1. Access Grafana:
+             open https://grafana.{{ domain }}
+             Login with: admin / {{ grafana_password.stdout }}
+
+          2. Explore pre-installed dashboards:
+             - K3s Cluster Overview
+             - Kubernetes Nodes
+             - Kubernetes Pods
+             - Nginx Demo Application
+
+          3. View Prometheus targets:
+             open https://prometheus.{{ domain }}/targets
+
+          4. Check AlertManager:
+             open https://alertmanager.{{ domain }}
+
+          5. Deploy demo application with metrics:
+             kubectl create namespace demo
+             kubectl apply -f examples/nginx-demo-local.yaml
+
+          6. Import CA certificate to avoid SSL warnings:
+             sudo security add-trusted-cert -d -r trustRoot \
+               -k /Library/Keychains/System.keychain \
+               ~/.kube/k3s-local-ca.crt
+
+          ========================================
+          MONITORING FEATURES
+          ========================================
+
+          Prometheus is configured to scrape:
+          - Kubernetes API Server
+          - Kubelet and cAdvisor metrics
+          - Node Exporter (system metrics)
+          - kube-state-metrics
+          - Traefik Ingress Controller
+          - Custom ServiceMonitors
+
+          Grafana includes:
+          - Pre-configured Prometheus datasource
+          - Community dashboards for K8s
+          - Custom dashboards for your apps
+          - Alert visualization
+
+          Default retention: 7 days
+          Storage: 10GB (configurable)
+
+          ========================================
+
+- name: Final verification
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  tasks:
+    - name: Wait for all Prometheus components to be ready
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: monitoring
+        label_selectors:
+          - "app.kubernetes.io/part-of=kube-prometheus-stack"
+      register: monitoring_pods
+      until: monitoring_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length >= 3
+      retries: 30
+      delay: 10
+
+    - name: Get monitoring stack status
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: monitoring
+      register: all_monitoring_pods
+
+    - name: Display monitoring pod status
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          MONITORING PODS STATUS
+          ========================================
+          {% for pod in all_monitoring_pods.resources %}
+          - {{ pod.metadata.name }}: {{ pod.status.phase }}
+          {% endfor %}
+
+    - name: Verify Prometheus targets
+      ansible.builtin.uri:
+        url: http://localhost:9090/api/v1/targets
+        method: GET
+        return_content: yes
+      register: prometheus_targets
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Display success message
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          ✅ MONITORING STACK READY!
+          ========================================
+
+          All components are running and healthy.
+          You can now access the monitoring dashboards.
+
+          Quick links:
+          - Grafana: https://grafana.{{ domain }}
+          - Prometheus: https://prometheus.{{ domain }}
+          - AlertManager: https://alertmanager.{{ domain }}
+
+          ========================================

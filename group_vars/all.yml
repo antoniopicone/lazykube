@@ -2,7 +2,7 @@
 # Global variables for local K3s HA cluster (without Tailscale)
 
 # HAProxy IP - Dedicated load balancer for the cluster
-haproxy_ip: "192.168.105.84"
+haproxy_ip: "192.168.105.88"
 
 # K3s configuration
 k3s_version: "latest"
@@ -12,10 +12,10 @@ k3s_data_dir: "/var/lib/rancher/k3s"
 
 # Master nodes IPs for TLS SAN (includes HAProxy IP)
 master_ips:
-  - "192.168.105.81"
-  - "192.168.105.82"
-  - "192.168.105.83"
-  - "192.168.105.84"
+  - "192.168.105.85"
+  - "192.168.105.86"
+  - "192.168.105.87"
+  - "192.168.105.88"
 
 # Local domain (fictitious)
 domain: "k3s.dev"
@@ -50,3 +50,11 @@ local_kubeconfig_path: "~/.kube/{{ domain }}-config.yml"
 haproxy_stats_port: 8404
 haproxy_stats_user: "admin"
 haproxy_stats_password: "admin"  # CHANGE to a secure password
+
+# Prometheus + Grafana monitoring configuration
+prometheus_version: "latest"
+grafana_admin_password: "admin"  # CHANGE to a secure password
+prometheus_retention_days: 7
+prometheus_storage_size: "10Gi"
+grafana_storage_size: "5Gi"
+alertmanager_storage_size: "2Gi"

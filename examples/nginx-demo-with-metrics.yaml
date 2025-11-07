@@ -1,0 +1,267 @@
+---
+# Nginx demo application with Prometheus metrics support
+# Deploy: kubectl apply -f nginx-demo-with-metrics.yaml
+# Requires: monitoring stack installed (Prometheus + Grafana)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    name: demo
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-demo
+  namespace: demo
+  labels:
+    app: nginx-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-demo
+  template:
+    metadata:
+      labels:
+        app: nginx-demo
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9113"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+
+      # Nginx Prometheus Exporter sidecar
+      - name: nginx-exporter
+        image: nginx/nginx-prometheus-exporter:1.1.0
+        args:
+          - '-nginx.scrape-uri=http://localhost:80/stub_status'
+        ports:
+        - containerPort: 9113
+          name: metrics
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+
+      volumes:
+      - name: html
+        configMap:
+          name: nginx-html
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: demo
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+        }
+
+        # Stub status for Prometheus exporter
+        location /stub_status {
+            stub_status on;
+            access_log off;
+            allow 127.0.0.1;
+            deny all;
+        }
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-html
+  namespace: demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>K3s Local Cluster Demo + Monitoring</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .container {
+                background: rgba(255,255,255,0.1);
+                padding: 30px;
+                border-radius: 10px;
+                backdrop-filter: blur(10px);
+            }
+            h1 { font-size: 2.5em; margin-bottom: 10px; }
+            .info { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .success { color: #90EE90; font-weight: bold; }
+            .metric { color: #FFA500; }
+            a { color: #90EE90; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>K3s HA Cluster (Local)</h1>
+            <p class="success">✓ Nginx deployment running with monitoring!</p>
+
+            <div class="info">
+                <h2>Cluster Information</h2>
+                <p><strong>Cluster:</strong> K3s HA with 3 master nodes</p>
+                <p><strong>Domain:</strong> k3s.dev</p>
+                <p><strong>Ingress:</strong> Traefik</p>
+                <p><strong>Certificates:</strong> Self-signed (cert-manager)</p>
+                <p><strong>LoadBalancer:</strong> MetalLB (Layer 2)</p>
+                <p class="metric"><strong>Monitoring:</strong> Prometheus + Grafana ✓</p>
+            </div>
+
+            <div class="info">
+                <h2>Services</h2>
+                <p>• <a href="https://traefik.k3s.dev/dashboard/">Traefik Dashboard</a></p>
+                <p>• <a href="https://prometheus.k3s.dev">Prometheus</a></p>
+                <p>• <a href="https://grafana.k3s.dev">Grafana</a></p>
+                <p>• <a href="https://alertmanager.k3s.dev">AlertManager</a></p>
+                <p>• <a href="https://demo.k3s.dev">This page</a></p>
+            </div>
+
+            <div class="info">
+                <h2>Monitoring</h2>
+                <p class="metric">This application is being monitored by Prometheus</p>
+                <p><strong>Metrics exposed:</strong></p>
+                <ul>
+                    <li>HTTP requests per second</li>
+                    <li>Active connections</li>
+                    <li>CPU and Memory usage</li>
+                    <li>Response times</li>
+                    <li>Pod health status</li>
+                </ul>
+                <p>View metrics in <a href="https://grafana.k3s.dev">Grafana dashboard</a></p>
+            </div>
+
+            <p style="margin-top: 30px; font-size: 0.9em; opacity: 0.8;">
+                Powered by K3s + Ansible + Prometheus + Grafana
+            </p>
+        </div>
+    </body>
+    </html>
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-demo
+  namespace: demo
+  labels:
+    app: nginx-demo
+spec:
+  selector:
+    app: nginx-demo
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  - port: 9113
+    targetPort: 9113
+    protocol: TCP
+    name: metrics
+
+---
+# ServiceMonitor for Prometheus to scrape metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-demo
+  namespace: demo
+  labels:
+    app: nginx-demo
+spec:
+  selector:
+    matchLabels:
+      app: nginx-demo
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: demo-tls
+  namespace: demo
+spec:
+  secretName: demo-tls
+  duration: 8760h  # 1 year
+  renewBefore: 360h  # 15 days
+  subject:
+    organizations:
+      - k3s-local
+  dnsNames:
+    - demo.k3s.dev
+  issuerRef:
+    name: ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-demo
+  namespace: demo
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - demo.k3s.dev
+    secretName: demo-tls
+  rules:
+  - host: demo.k3s.dev
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-demo
+            port:
+              number: 80

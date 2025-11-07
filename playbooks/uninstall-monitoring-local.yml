@@ -1,0 +1,67 @@
+---
+# Playbook for uninstalling Prometheus + Grafana monitoring stack
+# Run with: ansible-playbook -i inventories/hosts.yml playbooks/uninstall-monitoring-local.yml
+
+- name: Uninstall Prometheus + Grafana monitoring stack
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  tasks:
+    - name: Uninstall kube-prometheus-stack Helm release
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        release_namespace: monitoring
+        state: absent
+        wait: true
+        wait_timeout: 5m
+      ignore_errors: true
+
+    - name: Delete monitoring namespace
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: monitoring
+        state: absent
+        wait: true
+        wait_timeout: 2m
+      ignore_errors: true
+
+    - name: Wait for namespace to be fully deleted
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Delete Prometheus CRDs
+      ansible.builtin.shell: |
+        kubectl delete crd prometheuses.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd prometheusrules.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd servicemonitors.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd podmonitors.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd alertmanagers.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd alertmanagerconfigs.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd thanosrulers.monitoring.coreos.com --ignore-not-found=true
+        kubectl delete crd probes.monitoring.coreos.com --ignore-not-found=true
+      ignore_errors: true
+
+    - name: Delete ServiceMonitor for Traefik if exists
+      kubernetes.core.k8s:
+        kind: ServiceMonitor
+        name: traefik
+        namespace: traefik
+        state: absent
+      ignore_errors: true
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          MONITORING STACK UNINSTALLED
+          ========================================
+
+          The monitoring stack has been removed.
+
+          To reinstall, run:
+          ansible-playbook -i inventories/hosts.yml playbooks/install-monitoring-local.yml
+
+          ========================================

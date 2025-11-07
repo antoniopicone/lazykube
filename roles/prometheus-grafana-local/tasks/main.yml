@@ -1,0 +1,221 @@
+---
+# Tasks for installing Prometheus + Grafana monitoring stack on local K3s cluster
+
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: monitoring
+
+- name: Add Prometheus Helm repository
+  kubernetes.core.helm_repository:
+    name: prometheus-community
+    repo_url: https://prometheus-community.github.io/helm-charts
+
+- name: Add Grafana Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: https://grafana.github.io/helm-charts
+
+- name: Update Helm repositories
+  ansible.builtin.command: helm repo update
+  changed_when: false
+
+- name: Create Prometheus values file
+  ansible.builtin.template:
+    src: prometheus-values.yaml.j2
+    dest: /tmp/prometheus-values.yaml
+    mode: '0644'
+
+- name: Install kube-prometheus-stack
+  kubernetes.core.helm:
+    name: kube-prometheus-stack
+    chart_ref: prometheus-community/kube-prometheus-stack
+    release_namespace: monitoring
+    create_namespace: true
+    values_files:
+      - /tmp/prometheus-values.yaml
+    wait: true
+    wait_timeout: 10m
+
+- name: Wait for Prometheus Operator to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: monitoring
+    name: kube-prometheus-stack-operator
+  register: prometheus_operator
+  until: prometheus_operator.resources[0].status.readyReplicas | default(0) >= 1
+  retries: 30
+  delay: 10
+
+- name: Create Grafana dashboard ConfigMaps
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', item) | from_yaml }}"
+  loop:
+    - ../files/grafana-dashboard-k8s-cluster.yaml
+    - ../files/grafana-dashboard-nginx.yaml
+
+- name: Create ServiceMonitor for Traefik
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: traefik
+        namespace: traefik
+        labels:
+          app: traefik
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
+        endpoints:
+          - port: metrics
+            interval: 30s
+
+- name: Create Ingress for Prometheus
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: prometheus
+        namespace: monitoring
+        annotations:
+          cert-manager.io/cluster-issuer: ca-issuer
+      spec:
+        ingressClassName: traefik
+        tls:
+          - hosts:
+              - "prometheus.{{ domain }}"
+            secretName: prometheus-tls
+        rules:
+          - host: "prometheus.{{ domain }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: kube-prometheus-stack-prometheus
+                      port:
+                        number: 9090
+
+- name: Create Ingress for Grafana
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: grafana
+        namespace: monitoring
+        annotations:
+          cert-manager.io/cluster-issuer: ca-issuer
+      spec:
+        ingressClassName: traefik
+        tls:
+          - hosts:
+              - "grafana.{{ domain }}"
+            secretName: grafana-tls
+        rules:
+          - host: "grafana.{{ domain }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: kube-prometheus-stack-grafana
+                      port:
+                        number: 80
+
+- name: Create Ingress for AlertManager
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: alertmanager
+        namespace: monitoring
+        annotations:
+          cert-manager.io/cluster-issuer: ca-issuer
+      spec:
+        ingressClassName: traefik
+        tls:
+          - hosts:
+              - "alertmanager.{{ domain }}"
+            secretName: alertmanager-tls
+        rules:
+          - host: "alertmanager.{{ domain }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: kube-prometheus-stack-alertmanager
+                      port:
+                        number: 9093
+
+- name: Get Grafana admin password
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: kube-prometheus-stack-grafana
+    namespace: monitoring
+  register: grafana_secret
+
+- name: Display monitoring access information
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      PROMETHEUS + GRAFANA MONITORING STACK INSTALLED!
+      ============================================================
+
+      SERVICES:
+      - Prometheus: https://prometheus.{{ domain }}
+      - Grafana: https://grafana.{{ domain }}
+      - AlertManager: https://alertmanager.{{ domain }}
+
+      GRAFANA CREDENTIALS:
+      - Username: admin
+      - Password: {{ grafana_secret.resources[0].data['admin-password'] | b64decode }}
+
+      DNS CONFIGURATION:
+      Add these entries to your /etc/hosts file:
+
+      {{ haproxy_ip }}  prometheus.{{ domain }}
+      {{ haproxy_ip }}  grafana.{{ domain }}
+      {{ haproxy_ip }}  alertmanager.{{ domain }}
+
+      Example command:
+      sudo bash -c 'cat >> /etc/hosts << EOF
+
+      # Monitoring Stack
+      {{ haproxy_ip }}  prometheus.{{ domain }}
+      {{ haproxy_ip }}  grafana.{{ domain }}
+      {{ haproxy_ip }}  alertmanager.{{ domain }}
+      EOF'
+
+      PROMETHEUS TARGETS:
+      - Kubernetes API Server
+      - Kubelet metrics
+      - cAdvisor (container metrics)
+      - Node Exporter (system metrics)
+      - kube-state-metrics
+      - Custom ServiceMonitors
+
+      GRAFANA DASHBOARDS:
+      - Kubernetes Cluster Overview
+      - Node Exporter Full
+      - Nginx/Application Metrics
+      - Custom dashboards available
+
+      ============================================================
