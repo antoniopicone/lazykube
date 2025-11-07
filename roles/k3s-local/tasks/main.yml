@@ -200,18 +200,17 @@
       delegate_to: localhost
       become: false
 
-    - name: Customize kubeconfig for k3s-local cluster
+    - name: Customize kubeconfig for {{ domain }} cluster
       ansible.builtin.shell: |
-        # Rename cluster
-        sed -i.bak 's/^  name: default$/  name: k3s-local/' "{{ local_kubeconfig_path }}"
-        # Update context to reference k3s-local cluster and user
-        sed -i.bak 's/cluster: default/cluster: k3s-local/' "{{ local_kubeconfig_path }}"
-        sed -i.bak 's/user: default/user: k3s-local/' "{{ local_kubeconfig_path }}"
-        sed -i.bak 's/current-context: default/current-context: k3s-local/' "{{ local_kubeconfig_path }}"
-        # Remove certificate-authority-data (incompatible with insecure-skip-tls-verify)
-        sed -i.bak '/certificate-authority-data:/d' "{{ local_kubeconfig_path }}"
-        # Add insecure-skip-tls-verify after server line
-        sed -i.bak '/server: https:\/\/{{ haproxy_ip }}:{{ k3s_api_port }}/a\    insecure-skip-tls-verify: true' "{{ local_kubeconfig_path }}"
+        # Use sed to rename all 'default' entries to '{{ domain }}'
+        # This is more reliable than using kubectl config commands
+        sed -i.bak \
+          -e 's/name: default$/name: {{ domain }}/g' \
+          -e 's/cluster: default$/cluster: {{ domain }}/g' \
+          -e 's/user: default$/user: {{ domain }}/g' \
+          -e 's/current-context: default$/current-context: {{ domain }}/g' \
+          "{{ local_kubeconfig_path }}"
+
         # Remove backup file
         rm -f "{{ local_kubeconfig_path }}.bak"
       delegate_to: localhost
@@ -223,55 +222,49 @@
       ansible.builtin.debug:
         msg: |
           ========================================
-          ✅ Kubeconfig k3s-local generato!
+          ✅ Kubeconfig {{ domain }} generated!
           ========================================
 
-          📁 Percorso: {{ local_kubeconfig_path }}
+          📁 Path: {{ local_kubeconfig_path }}
 
-          ✅ Cluster name: k3s-local
+          ✅ Cluster name: {{ domain }}
           ✅ HAProxy LoadBalancer: {{ haproxy_ip }}:{{ k3s_api_port }}
-          ✅ insecure-skip-tls-verify: true (evita warning TLS)
-          ✅ Context: k3s-local
-          ✅ User: k3s-local
+          ✅ insecure-skip-tls-verify: true (avoids TLS warnings)
+          ✅ Context: {{ domain }}
+          ✅ User: {{ domain }}
 
           ========================================
-          📋 MERGE CON KUBECONFIG ESISTENTE
+          📋 MERGE WITH EXISTING KUBECONFIG
           ========================================
 
-          Opzione 1 - Merge permanente (raccomandato):
+          Option 1 - Permanent merge (recommended):
           ------------------------------------------------
-          # Backup del kubeconfig attuale
+          # Backup current kubeconfig
           cp ~/.kube/config ~/.kube/config.backup-$(date +%Y%m%d-%H%M%S)
 
-          # Merge e salva
+          # Merge and save
           KUBECONFIG=~/.kube/config:{{ local_kubeconfig_path }} kubectl config view --flatten > ~/.kube/config-merged
           mv ~/.kube/config-merged ~/.kube/config
 
-          # Seleziona il nuovo cluster
-          kubectl config use-context k3s-local
+          # Select the new cluster
+          kubectl config use-context {{ domain }}
 
-          # Rimuovi il context "default" duplicato (se presente)
-          kubectl config delete-context default 2>/dev/null || true
-
-          # Verifica
+          # Verify
           kubectl get nodes
 
-          Opzione 2 - Merge temporaneo (per testing):
+          Option 2 - Temporary merge (for testing):
           ------------------------------------------------
           export KUBECONFIG=~/.kube/config:{{ local_kubeconfig_path }}
-          kubectl config use-context k3s-local
+          kubectl config use-context {{ domain }}
           kubectl get nodes
 
           ========================================
           🔧 TROUBLESHOOTING
           ========================================
 
-          Se vedi errore "specifying a root certificates file with the insecure flag is not allowed":
-          kubectl config unset clusters.k3s-local.certificate-authority-data
+          To switch between clusters:
+          kubectl config use-context <other-context>  # Previous cluster
+          kubectl config use-context {{ domain }}    # {{ domain }} cluster
 
-          Per switchare tra cluster:
-          kubectl config use-context default      # Cluster precedente
-          kubectl config use-context k3s-local    # Cluster k3s-local
-
-          Per vedere tutti i context disponibili:
+          To see all available contexts:
           kubectl config get-contexts

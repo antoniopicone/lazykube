@@ -4,7 +4,8 @@
 INVENTORY := inventories/hosts.yml
 INVENTORY_TEMPLATE := inventories/hosts.yml.template
 PLAYBOOK_DIR := playbooks
-KUBECONFIG := ~/.kube/config-k3s-local
+# KUBECONFIG path will be dynamically determined based on domain
+# Default shown here for reference: ~/.kube/<domain>-config.yml
 CA_CERT := ~/.kube/k3s-local-ca.crt
 CONFIG_FILE := .cluster-config
 
@@ -92,11 +93,13 @@ install-verbose: ## Install with verbose output (shows all stages)
 
 verify: ## Verify cluster status
 	@echo "$(BLUE)Verifying cluster status...$(NC)"
-	@if [ ! -f $(KUBECONFIG) ]; then \
-		echo "$(YELLOW)Kubeconfig not found$(NC)"; \
+	@DOMAIN=$$(grep '^domain:' group_vars/all.yml 2>/dev/null | awk '{print $$2}' | tr -d '"' || echo "k3cluster.local") && \
+	KUBECONFIG_FILE="$$HOME/.kube/$${DOMAIN}-config.yml" && \
+	if [ ! -f "$$KUBECONFIG_FILE" ]; then \
+		echo "$(YELLOW)Kubeconfig not found at $$KUBECONFIG_FILE$(NC)"; \
 		exit 1; \
-	fi
-	@export KUBECONFIG=$(KUBECONFIG) && \
+	fi && \
+	export KUBECONFIG="$$KUBECONFIG_FILE" && \
 	echo "" && \
 	echo "$(GREEN)Cluster Info:$(NC)" && \
 	kubectl cluster-info && \
@@ -117,14 +120,16 @@ verify: ## Verify cluster status
 	kubectl get certificate -A
 
 logs: ## Show component logs
-	@echo "$(BLUE)MetalLB Logs:$(NC)"
-	@export KUBECONFIG=$(KUBECONFIG) && kubectl logs -n metallb-system -l component=controller --tail=20 || true
-	@echo ""
-	@echo "$(BLUE)cert-manager Logs:$(NC)"
-	@export KUBECONFIG=$(KUBECONFIG) && kubectl logs -n cert-manager -l app=cert-manager --tail=20 || true
-	@echo ""
-	@echo "$(BLUE)Traefik Logs:$(NC)"
-	@export KUBECONFIG=$(KUBECONFIG) && kubectl logs -n traefik -l app.kubernetes.io/name=traefik --tail=20 || true
+	@DOMAIN=$$(grep '^domain:' group_vars/all.yml 2>/dev/null | awk '{print $$2}' | tr -d '"' || echo "k3cluster.local") && \
+	export KUBECONFIG="$$HOME/.kube/$${DOMAIN}-config.yml" && \
+	echo "$(BLUE)MetalLB Logs:$(NC)" && \
+	kubectl logs -n metallb-system -l component=controller --tail=20 || true && \
+	echo "" && \
+	echo "$(BLUE)cert-manager Logs:$(NC)" && \
+	kubectl logs -n cert-manager -l app=cert-manager --tail=20 || true && \
+	echo "" && \
+	echo "$(BLUE)Traefik Logs:$(NC)" && \
+	kubectl logs -n traefik -l app.kubernetes.io/name=traefik --tail=20 || true
 
 trust-ca: ## Import CA certificate into system (for HTTPS without warnings)
 	@echo "$(BLUE)Importing CA certificate...$(NC)"
@@ -145,16 +150,34 @@ dns-help: ## Show instructions to configure local DNS
 	@echo ""
 	@if [ -f $(CONFIG_FILE) ]; then \
 		source $(CONFIG_FILE) && \
-		echo "$(YELLOW)1. Configure local DNS (/etc/hosts):$(NC)" && \
+		DOMAIN=`grep '^domain:' group_vars/all.yml | awk '{print $$2}' | tr -d '"'` && \
+		echo "$(YELLOW)1. Merge kubectl config:$(NC)" && \
+		echo "" && \
+		echo "A kubeconfig file has been created at: $(GREEN)~/.kube/$${DOMAIN}-config.yml$(NC)" && \
+		echo "" && \
+		echo "$(GREEN)# Backup existing config" && \
+		echo "cp ~/.kube/config ~/.kube/config.backup-\$$(date +%Y%m%d-%H%M%S)" && \
+		echo "" && \
+		echo "# Merge with existing kubeconfig" && \
+		echo "KUBECONFIG=~/.kube/config:~/.kube/$${DOMAIN}-config.yml kubectl config view --flatten > ~/.kube/config-merged" && \
+		echo "mv ~/.kube/config-merged ~/.kube/config" && \
+		echo "" && \
+		echo "# Switch to the new cluster context" && \
+		echo "kubectl config use-context $${DOMAIN}" && \
+		echo "" && \
+		echo "# Verify connection" && \
+		echo "kubectl get nodes$(NC)" && \
+		echo "" && \
+		echo "$(YELLOW)2. Configure local DNS (/etc/hosts):$(NC)" && \
 		echo "" && \
 		echo "$(GREEN)sudo bash -c 'cat >> /etc/hosts << EOF" && \
 		echo "" && \
 		echo "# K3s Local Cluster (via HAProxy)" && \
-		echo "$${HAPROXY_IP}  traefik.k3cluster.local" && \
-		echo "$${HAPROXY_IP}  demo.k3cluster.local" && \
+		echo "$${HAPROXY_IP}  traefik.$${DOMAIN}" && \
+		echo "$${HAPROXY_IP}  demo.$${DOMAIN}" && \
 		echo "EOF'$(NC)" && \
 		echo "" && \
-		echo "$(YELLOW)2. Import CA certificate (disable SSL warnings):$(NC)" && \
+		echo "$(YELLOW)3. Import CA certificate (disable SSL warnings):$(NC)" && \
 		echo "" && \
 		echo "$(GREEN)./lazykube trust-ca$(NC)" && \
 		echo "" && \
@@ -174,7 +197,8 @@ uninstall: ## Remove K3s cluster
 	@ansible k3s_masters -i $(INVENTORY) -m shell -a "sudo /usr/local/bin/k3s-uninstall.sh" -b || true
 	@ansible haproxy -i $(INVENTORY) -m shell -a "sudo systemctl stop haproxy && sudo apt remove -y haproxy" -b || true
 	@rm -f /tmp/k3s-token-local
-	@rm -f $(KUBECONFIG)
+	@DOMAIN=$$(grep '^domain:' group_vars/all.yml 2>/dev/null | awk '{print $$2}' | tr -d '"' || echo "k3cluster.local") && \
+	rm -f "$$HOME/.kube/$${DOMAIN}-config.yml"
 	@echo "$(GREEN)Cluster removed$(NC)"
 
 clean: ## Clean temporary files and configuration
@@ -225,23 +249,53 @@ config: ## Show current configuration
 	@ansible-inventory -i $(INVENTORY) --graph 2>/dev/null || echo "  $(RED)Inventory not found$(NC)"
 
 kubeconfig: ## Information about KUBECONFIG
-	@if [ ! -f $(KUBECONFIG) ]; then \
+	@DOMAIN=$$(grep '^domain:' group_vars/all.yml 2>/dev/null | awk '{print $$2}' | tr -d '"' || echo "k3cluster.local") && \
+	KUBECONFIG_FILE="$$HOME/.kube/$${DOMAIN}-config.yml" && \
+	if [ ! -f "$$KUBECONFIG_FILE" ]; then \
 		echo "$(YELLOW)Kubeconfig not found. Run './lazykube install'$(NC)"; \
 		exit 1; \
-	fi
-	@echo "$(BLUE)Kubeconfig generated at: $(KUBECONFIG)$(NC)"
-	@echo ""
-	@echo "$(YELLOW)To merge with existing kubeconfig:$(NC)"
-	@echo ""
-	@echo "  # Backup"
-	@echo "  cp ~/.kube/config ~/.kube/config.backup-\$$(date +%Y%m%d-%H%M%S)"
-	@echo ""
-	@echo "  # Merge"
-	@echo "  KUBECONFIG=~/.kube/config:$(KUBECONFIG) kubectl config view --flatten > ~/.kube/config-merged"
-	@echo "  mv ~/.kube/config-merged ~/.kube/config"
-	@echo ""
-	@echo "  # Switch to k3s-local cluster"
-	@echo "  kubectl config use-context k3s-local"
-	@echo ""
-	@echo "  # Verify"
-	@echo "  kubectl get nodes"
+	fi && \
+	echo "$(BLUE)Kubeconfig generated at: $$KUBECONFIG_FILE$(NC)" && \
+	echo "" && \
+	echo "$(YELLOW)To merge with existing kubeconfig:$(NC)" && \
+	echo "" && \
+	echo "  # Backup" && \
+	echo "  cp ~/.kube/config ~/.kube/config.backup-\$$(date +%Y%m%d-%H%M%S)" && \
+	echo "" && \
+	echo "  # Merge" && \
+	echo "  KUBECONFIG=~/.kube/config:$$KUBECONFIG_FILE kubectl config view --flatten > ~/.kube/config-merged" && \
+	echo "  mv ~/.kube/config-merged ~/.kube/config" && \
+	echo "" && \
+	echo "  # Switch to $$DOMAIN cluster" && \
+	echo "  kubectl config use-context $$DOMAIN" && \
+	echo "" && \
+	echo "  # Verify" && \
+	echo "  kubectl get nodes"
+
+fix-kubeconfig: ## Fix kubeconfig cluster/context/user names to match domain
+	@DOMAIN=$$(grep '^domain:' group_vars/all.yml 2>/dev/null | awk '{print $$2}' | tr -d '"' || echo "k3cluster.local") && \
+	KUBECONFIG_FILE="$$HOME/.kube/$${DOMAIN}-config.yml" && \
+	if [ ! -f "$$KUBECONFIG_FILE" ]; then \
+		echo "$(RED)Error: Kubeconfig not found at $$KUBECONFIG_FILE$(NC)"; \
+		echo "$(YELLOW)Run first: ./lazykube install$(NC)"; \
+		exit 1; \
+	fi && \
+	echo "$(BLUE)Fixing kubeconfig for domain: $$DOMAIN$(NC)" && \
+	export KUBECONFIG="$$KUBECONFIG_FILE" && \
+	CURRENT_CONTEXT=$$(kubectl config view -o jsonpath='{.current-context}') && \
+	if [ "$$CURRENT_CONTEXT" != "default" ]; then \
+		echo "$(YELLOW)Kubeconfig already fixed or no 'default' context found$(NC)"; \
+		kubectl config get-contexts; \
+		exit 0; \
+	fi && \
+	sed -i.bak \
+		-e 's/name: default$$/name: '"$$DOMAIN"'/g' \
+		-e 's/cluster: default$$/cluster: '"$$DOMAIN"'/g' \
+		-e 's/user: default$$/user: '"$$DOMAIN"'/g' \
+		-e 's/current-context: default$$/current-context: '"$$DOMAIN"'/g' \
+		"$$KUBECONFIG_FILE" && \
+	rm -f "$$KUBECONFIG_FILE.bak" && \
+	echo "" && \
+	echo "$(GREEN)✓ Kubeconfig fixed!$(NC)" && \
+	echo "" && \
+	kubectl config get-contexts

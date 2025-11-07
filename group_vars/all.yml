@@ -2,7 +2,7 @@
 # Global variables for local K3s HA cluster (without Tailscale)
 
 # HAProxy IP - Dedicated load balancer for the cluster
-haproxy_ip: "192.168.105.54"
+haproxy_ip: "192.168.105.84"
 
 # K3s configuration
 k3s_version: "latest"
@@ -12,13 +12,13 @@ k3s_data_dir: "/var/lib/rancher/k3s"
 
 # Master nodes IPs for TLS SAN (includes HAProxy IP)
 master_ips:
-  - "192.168.105.50"
-  - "192.168.105.51"
-  - "192.168.105.52"
-  - "192.168.105.54"
+  - "192.168.105.81"
+  - "192.168.105.82"
+  - "192.168.105.83"
+  - "192.168.105.84"
 
 # Local domain (fictitious)
-domain: "k3cluster.local"
+domain: "k3s.dev"
 cluster_name: "k3s-local"
 
 # MetalLB configuration (local LoadBalancer)
@@ -43,8 +43,8 @@ use_self_signed_certs: true
 coredns_custom_domain: "{{ domain }}"
 coredns_custom_ip: "{{ haproxy_ip }}"
 
-# Kubeconfig local path
-local_kubeconfig_path: "~/.kube/config-k3s-local"
+# Kubeconfig local path (dynamically set based on domain)
+local_kubeconfig_path: "~/.kube/{{ domain }}-config.yml"
 
 # HAProxy configuration
 haproxy_stats_port: 8404

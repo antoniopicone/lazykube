@@ -42,6 +42,7 @@ VALID_COMMANDS=(
     "haproxy-stats"
     "dns-help"
     "kubeconfig"
+    "fix-kubeconfig"
     "trust-ca"
     "uninstall"
     "clean"

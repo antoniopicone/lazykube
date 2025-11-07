@@ -88,26 +88,9 @@ make install
 ./lazykube install-verbose
 ```
 
-### 4. Configure kubectl
+### 4. Post-installation setup
 
-```bash
-# Backup existing kubeconfig
-cp ~/.kube/config ~/.kube/config.backup-$(date +%Y%m%d-%H%M%S)
-
-# Merge with existing kubeconfig
-KUBECONFIG=~/.kube/config:~/.kube/config-k3s-local kubectl config view --flatten > ~/.kube/config-merged
-mv ~/.kube/config-merged ~/.kube/config
-
-# Switch to k3s-local cluster
-kubectl config use-context k3s-local
-
-# Verify
-kubectl get nodes
-```
-
-### 5. Post-installation setup
-
-After installation, configure DNS and import the CA certificate:
+After installation completes, run the setup helper to see all configuration steps:
 
 ```bash
 ./lazykube dns-help
@@ -115,9 +98,22 @@ After installation, configure DNS and import the CA certificate:
 make dns-help
 ```
 
-This will show you:
-1. **DNS configuration** - Add entries to `/etc/hosts` to access services via domain names
-2. **CA certificate import** - Run `./lazykube trust-ca` to avoid SSL warnings in your browser
+This will show you how to:
+1. **Merge kubectl config** - Integrate the new cluster config (`~/.kube/config-k3s-local`) with your existing kubectl configuration
+2. **Configure DNS** - Add entries to `/etc/hosts` to access services via domain names
+3. **Import CA certificate** - Run `./lazykube trust-ca` to avoid SSL warnings in your browser
+
+**Quick setup example:**
+```bash
+# 1. Merge kubeconfig
+cp ./.kube/config ~/.kube/config.backup-$(date +%Y%m%d-%H%M%S)
+KUBECONFIG=~/.kube/config:~/.kube/config-k3s-local kubectl config view --flatten > ~/.kube/config-merged
+mv ~/.kube/config-merged ~/.kube/config
+kubectl config use-context k3s-local
+
+# 2. Verify connection
+kubectl get nodes
+```
 
 ## 📖 Available Commands
 
@@ -154,8 +150,8 @@ You can use either `./lazykube <command>` or `make <command>` syntax.
 
 ### Utilities
 
-- `lazykube dns-help` / `make dns-help` - Show local DNS instructions
-- `lazykube kubeconfig` / `make kubeconfig` - Instructions for kubeconfig merge
+- `lazykube dns-help` / `make dns-help` - Show post-installation setup (kubectl merge, DNS, CA certificate)
+- `lazykube kubeconfig` / `make kubeconfig` - Detailed instructions for kubeconfig merge
 - `lazykube trust-ca` / `make trust-ca` - Import CA into system (macOS)
 
 ### Cleanup
@@ -325,21 +321,19 @@ lazykube/
 # 3. Install cluster (~15-20 min)
 ./lazykube install
 
-# 4. Configure kubectl
-KUBECONFIG=~/.kube/config:~/.kube/config-k3s-local kubectl config view --flatten > ~/.kube/config-merged
-mv ~/.kube/config-merged ~/.kube/config
-kubectl config use-context k3s-local
+# 4. Post-installation setup
+./lazykube dns-help          # Shows all setup steps
 
-# 5. Post-installation setup (DNS + SSL certificates)
-./lazykube dns-help          # Shows setup instructions
-# Follow the instructions to:
+# Follow the instructions displayed to:
+# - Merge kubeconfig (~/.kube/config-k3s-local)
 # - Add DNS entries to /etc/hosts
 # - Import CA certificate: ./lazykube trust-ca
 
-# 6. Verify installation
+# 5. Verify installation
+kubectl get nodes            # After merging kubeconfig
 ./lazykube verify
 
-# 7. Access dashboards (no SSL warnings after trust-ca!)
+# 6. Access dashboards (no SSL warnings after trust-ca!)
 ./lazykube haproxy-stats  # http://<HAPROXY_IP>:8404/stats
 ./lazykube dashboard      # https://traefik.k3cluster.local/dashboard/
 ```
