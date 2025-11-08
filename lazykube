@@ -15,6 +15,52 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Commands that require Ansible
+ANSIBLE_REQUIRED_COMMANDS=(
+    "check"
+    "setup"
+    "ping"
+    "install"
+    "install-verbose"
+    "verify"
+    "uninstall"
+    "config"
+)
+
+# Check if Ansible is installed
+check_ansible() {
+    if ! command -v ansible >/dev/null 2>&1; then
+        echo -e "${RED}OMG you don't have Ansible installed, can I install it with Homebrew?${NC}"
+        read -p "Install Ansible via Homebrew? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! command -v brew >/dev/null 2>&1; then
+                echo -e "${RED}Error: Homebrew is not installed!${NC}"
+                echo "Install Homebrew first: https://brew.sh"
+                exit 1
+            fi
+            echo -e "${BLUE}Installing Ansible via Homebrew...${NC}"
+            brew install ansible
+            echo -e "${GREEN}✓ Ansible installed successfully!${NC}"
+        else
+            echo -e "${RED}Ansible is required to run this command.${NC}"
+            echo "Install manually with: brew install ansible"
+            exit 1
+        fi
+    fi
+}
+
+# Check if command requires Ansible
+requires_ansible() {
+    local cmd=$1
+    for ansible_cmd in "${ANSIBLE_REQUIRED_COMMANDS[@]}"; do
+        if [ "$cmd" = "$ansible_cmd" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Show usage if no arguments provided
 if [ $# -eq 0 ]; then
     cd "$SCRIPT_DIR"
@@ -62,6 +108,11 @@ is_valid_command() {
 
 # Execute the command
 if is_valid_command "$COMMAND"; then
+    # Check if Ansible is required for this command
+    if requires_ansible "$COMMAND"; then
+        check_ansible
+    fi
+
     cd "$SCRIPT_DIR"
     make "$COMMAND" "$@"
 else
