@@ -1,0 +1,113 @@
+# Default values for nginx-demo
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 2
+
+image:
+  repository: nginx
+  tag: alpine
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: ca-issuer
+  hosts:
+    - host: demo.k3cluster.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: demo-tls
+      hosts:
+        - demo.k3cluster.local
+
+certificate:
+  enabled: true
+  secretName: demo-tls
+  duration: 8760h  # 1 year
+  renewBefore: 360h  # 15 days
+  issuerRef:
+    name: ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+  subject:
+    organizations:
+      - k3s-local
+  dnsNames:
+    - demo.k3cluster.local
+
+# HTML content for the nginx page
+htmlContent: |
+  <!DOCTYPE html>
+  <html>
+  <head>
+      <title>K3s/RKE2 Local Cluster Demo</title>
+      <style>
+          body {
+              font-family: Arial, sans-serif;
+              max-width: 800px;
+              margin: 50px auto;
+              padding: 20px;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white;
+          }
+          .container {
+              background: rgba(255,255,255,0.1);
+              padding: 30px;
+              border-radius: 10px;
+              backdrop-filter: blur(10px);
+          }
+          h1 { font-size: 2.5em; margin-bottom: 10px; }
+          .info { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 5px; margin: 20px 0; }
+          .success { color: #90EE90; font-weight: bold; }
+      </style>
+  </head>
+  <body>
+      <div class="container">
+          <h1>K3s/RKE2 HA Cluster (Local)</h1>
+          <p class="success">✓ Nginx deployment running via Helm!</p>
+
+          <div class="info">
+              <h2>Information</h2>
+              <p><strong>Cluster:</strong> K3s/RKE2 HA with 3 master nodes</p>
+              <p><strong>Domain:</strong> k3cluster.local</p>
+              <p><strong>Ingress:</strong> Traefik</p>
+              <p><strong>Certificates:</strong> Self-signed (cert-manager)</p>
+              <p><strong>LoadBalancer:</strong> MetalLB (Layer 2)</p>
+              <p><strong>Deployment:</strong> Helm Chart</p>
+          </div>
+
+          <div class="info">
+              <h2>Links</h2>
+              <p>• <a href="https://traefik.k3cluster.local/dashboard/" style="color: #90EE90;">Traefik Dashboard</a></p>
+              <p>• <a href="https://demo.k3cluster.local" style="color: #90EE90;">This page</a></p>
+          </div>
+
+          <p style="margin-top: 30px; font-size: 0.9em; opacity: 0.8;">
+              Powered by K3s/RKE2 + Ansible + Helm
+          </p>
+      </div>
+  </body>
+  </html>
+
+resources: {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

@@ -1,0 +1,43 @@
+# RKE2 Server Configuration - Additional Master Nodes
+# These nodes will join the existing cluster
+
+# Server to join (use port 9345 for RKE2 supervisor/registration)
+server: https://{{ first_master_ip }}:9345
+
+# Join token
+token: {{ rke2_join_token }}
+
+# Disable default components (we'll install our own)
+disable:
+  - rke2-ingress-nginx
+  - rke2-metrics-server
+
+# Network configuration
+node-ip: {{ node_ip }}
+advertise-address: {{ node_ip }}
+
+# TLS SANs for API server certificate
+tls-san:
+{% for ip in master_ips %}
+  - {{ ip }}
+{% endfor %}
+  - {{ domain }}
+  - kubernetes.{{ domain }}
+  - api.{{ domain }}
+
+# Cluster domain
+cluster-domain: {{ domain }}
+
+# CNI plugin
+cni: {{ rke2_cni }}
+
+# Write kubeconfig with correct permissions
+write-kubeconfig-mode: "0644"
+
+# Enable etcd snapshots for backup
+etcd-snapshot-schedule-cron: "0 */12 * * *"
+etcd-snapshot-retention: 5
+
+# Security: CIS Benchmark profile (RKE2's strength)
+# Uncomment to enable CIS hardening
+# profile: cis-1.23

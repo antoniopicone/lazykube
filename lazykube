@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# LazyKube - K3s HA Cluster Management Tool
+# LazyKube - K3s/RKE2 HA Cluster Management Tool
 # Wrapper script for Makefile commands
 
 set -e

@@ -1,10 +1,10 @@
 ---
-# Role - Installation of local K3s HA cluster (without Tailscale)
+# Role - Installation of RKE2 HA cluster (local network)
 
-- name: Check if K3s is already installed
+- name: Check if RKE2 is already installed
   ansible.builtin.stat:
-    path: /usr/local/bin/k3s
-  register: k3s_binary
+    path: /usr/local/bin/rke2
+  register: rke2_binary
 
 - name: Get primary network interface
   ansible.builtin.shell: |
@@ -35,153 +35,212 @@
   ansible.builtin.debug:
     msg: "Node {{ k3s_node_name }} will use IP: {{ node_ip }}"
 
-# Installazione primo master node
-- name: Install first K3s master with cluster-init
+# Create RKE2 config directory
+- name: Create RKE2 config directory
+  ansible.builtin.file:
+    path: "{{ rke2_config_dir }}"
+    state: directory
+    mode: '0755'
+
+# Install first master node
+- name: Install first RKE2 master with cluster-init
   when:
     - is_first_master | default(false)
-    - not k3s_binary.stat.exists
+    - not rke2_binary.stat.exists
   block:
-    - name: Download and install K3s (first master)
+    - name: Create RKE2 config for first master
+      ansible.builtin.template:
+        src: rke2-config-first.yaml.j2
+        dest: "{{ rke2_config_dir }}/config.yaml"
+        mode: '0600'
+
+    - name: Download and install RKE2 (first master)
       ansible.builtin.shell: |
-        curl -sfL https://get.k3s.io | sh -s - server \
-          --cluster-init \
-          --disable traefik \
-          --disable servicelb \
-          --node-ip={{ node_ip }} \
-          --advertise-address={{ node_ip }} \
-          {% for ip in master_ips %}--tls-san={{ ip }} \
-          {% endfor %}--tls-san={{ domain }} \
-          --tls-san=kubernetes.{{ domain }} \
-          --tls-san=api.{{ domain }} \
-          --cluster-domain={{ domain }} \
-          --write-kubeconfig-mode 644
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server sh -
       args:
-        creates: /usr/local/bin/k3s
+        creates: /usr/local/bin/rke2
+      register: rke2_install
+      retries: 3
+      delay: 10
 
-    - name: Wait for K3s to be ready
+    - name: Enable RKE2 server service
+      ansible.builtin.systemd:
+        name: rke2-server
+        enabled: true
+        daemon_reload: true
+
+    - name: Start RKE2 server
+      ansible.builtin.systemd:
+        name: rke2-server
+        state: started
+      register: rke2_start
+      retries: 3
+      delay: 10
+      until: rke2_start is succeeded
+
+    - name: Wait for RKE2 to be ready
       ansible.builtin.wait_for:
-        path: "{{ k3s_config_dir }}/k3s.yaml"
+        path: "{{ rke2_config_dir }}/rke2.yaml"
         state: present
-        timeout: 120
+        timeout: 300
 
-    - name: Get K3s node token
+    - name: Wait for node-token to be created
+      ansible.builtin.wait_for:
+        path: "{{ rke2_data_dir }}/server/node-token"
+        state: present
+        timeout: 180
+
+    - name: Get RKE2 node token
       ansible.builtin.slurp:
-        src: "{{ k3s_data_dir }}/server/node-token"
-      register: k3s_token_encoded
+        src: "{{ rke2_data_dir }}/server/node-token"
+      register: rke2_token_encoded
 
-    - name: Set K3s token fact
+    - name: Set RKE2 token fact
       ansible.builtin.set_fact:
-        k3s_node_token: "{{ k3s_token_encoded.content | b64decode | trim }}"
+        rke2_node_token: "{{ rke2_token_encoded.content | b64decode | trim }}"
 
     - name: Save token to local file
       ansible.builtin.copy:
-        content: "{{ k3s_node_token }}"
-        dest: "/tmp/k3s-token-local"
+        content: "{{ rke2_node_token }}"
+        dest: "/tmp/rke2-token-local"
         mode: '0600'
       delegate_to: localhost
       become: false
 
-    - name: Wait for K3s API to be ready
+    - name: Create kubectl symlink
+      ansible.builtin.file:
+        src: /var/lib/rancher/rke2/bin/kubectl
+        dest: /usr/local/bin/kubectl
+        state: link
+        force: yes
+
+    - name: Create crictl symlink
+      ansible.builtin.file:
+        src: /var/lib/rancher/rke2/bin/crictl
+        dest: /usr/local/bin/crictl
+        state: link
+        force: yes
+
+    - name: Wait for RKE2 API to be ready
       ansible.builtin.shell: |
-        kubectl get --raw='/readyz?verbose' 2>/dev/null || echo "waiting"
+        export KUBECONFIG={{ rke2_config_dir }}/rke2.yaml
+        /var/lib/rancher/rke2/bin/kubectl get --raw='/readyz?verbose' 2>/dev/null || echo "waiting"
       register: api_check
       changed_when: false
       until: api_check.rc == 0
-      retries: 30
+      retries: 60
       delay: 5
-      environment:
-        KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
 
-# Installazione master nodes successivi
-- name: Install additional K3s masters
+# Install additional master nodes
+- name: Install additional RKE2 masters
   when:
     - not (is_first_master | default(false))
-    - not k3s_binary.stat.exists
+    - not rke2_binary.stat.exists
   block:
     - name: Wait for token file to exist
       ansible.builtin.wait_for:
-        path: "/tmp/k3s-token-local"
+        path: "/tmp/rke2-token-local"
         state: present
         timeout: 300
       delegate_to: localhost
       become: false
 
-    - name: Read K3s token from local file
+    - name: Read RKE2 token from local file
       ansible.builtin.slurp:
-        src: "/tmp/k3s-token-local"
+        src: "/tmp/rke2-token-local"
       delegate_to: localhost
       become: false
       register: token_file
 
     - name: Set token fact
       ansible.builtin.set_fact:
-        k3s_join_token: "{{ token_file.content | b64decode | trim }}"
+        rke2_join_token: "{{ token_file.content | b64decode | trim }}"
 
     - name: Get first master IP
       ansible.builtin.set_fact:
         first_master_ip: "{{ master_ips[0] }}"
 
-    - name: Download and install K3s (additional masters)
+    - name: Create RKE2 config for additional masters
+      ansible.builtin.template:
+        src: rke2-config-join.yaml.j2
+        dest: "{{ rke2_config_dir }}/config.yaml"
+        mode: '0600'
+
+    - name: Download and install RKE2 (additional masters)
       ansible.builtin.shell: |
-        curl -sfL https://get.k3s.io | sh -s - server \
-          --server https://{{ first_master_ip }}:{{ k3s_api_port }} \
-          --token {{ k3s_join_token }} \
-          --disable traefik \
-          --disable servicelb \
-          --node-ip={{ node_ip }} \
-          --advertise-address={{ node_ip }} \
-          {% for ip in master_ips %}--tls-san={{ ip }} \
-          {% endfor %}--tls-san={{ domain }} \
-          --tls-san=kubernetes.{{ domain }} \
-          --tls-san=api.{{ domain }} \
-          --cluster-domain={{ domain }} \
-          --write-kubeconfig-mode 644
+        curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server sh -
       args:
-        creates: /usr/local/bin/k3s
+        creates: /usr/local/bin/rke2
+      register: rke2_install
+      retries: 3
+      delay: 10
 
-    - name: Wait for K3s to be ready
+    - name: Enable RKE2 server service
+      ansible.builtin.systemd:
+        name: rke2-server
+        enabled: true
+        daemon_reload: true
+
+    - name: Start RKE2 server
+      ansible.builtin.systemd:
+        name: rke2-server
+        state: started
+      register: rke2_start
+      retries: 3
+      delay: 10
+      until: rke2_start is succeeded
+
+    - name: Wait for RKE2 to be ready
       ansible.builtin.wait_for:
-        path: "{{ k3s_config_dir }}/k3s.yaml"
+        path: "{{ rke2_config_dir }}/rke2.yaml"
         state: present
-        timeout: 120
+        timeout: 300
 
-- name: Enable and start K3s service
-  ansible.builtin.systemd:
-    name: k3s
-    enabled: true
-    state: started
+    - name: Create kubectl symlink
+      ansible.builtin.file:
+        src: /var/lib/rancher/rke2/bin/kubectl
+        dest: /usr/local/bin/kubectl
+        state: link
+        force: yes
+
+    - name: Create crictl symlink
+      ansible.builtin.file:
+        src: /var/lib/rancher/rke2/bin/crictl
+        dest: /usr/local/bin/crictl
+        state: link
+        force: yes
 
 - name: Wait for at least one node to be ready
-  ansible.builtin.shell: kubectl get nodes --no-headers 2>/dev/null | grep -c Ready || echo "0"
+  ansible.builtin.shell: |
+    export KUBECONFIG={{ rke2_config_dir }}/rke2.yaml
+    /var/lib/rancher/rke2/bin/kubectl get nodes --no-headers 2>/dev/null | grep -c Ready || echo "0"
   register: ready_nodes
   changed_when: false
   until: ready_nodes.stdout | int > 0
-  retries: 30
+  retries: 60
   delay: 5
   when: is_first_master | default(false)
-  environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
 
 - name: Display nodes status
-  ansible.builtin.shell: kubectl get nodes
+  ansible.builtin.shell: |
+    export KUBECONFIG={{ rke2_config_dir }}/rke2.yaml
+    /var/lib/rancher/rke2/bin/kubectl get nodes
   register: nodes_status
   changed_when: false
   when: is_first_master | default(false)
-  environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
 
 - name: Show nodes
   ansible.builtin.debug:
     msg: "{{ nodes_status.stdout_lines }}"
   when: is_first_master | default(false)
 
-# Fetch kubeconfig sul Mac locale (solo dal primo master)
+# Fetch kubeconfig to local machine (only from first master)
 - name: Fetch kubeconfig to local machine
   when: is_first_master | default(false)
   block:
     - name: Read kubeconfig
       ansible.builtin.slurp:
-        src: "{{ k3s_config_dir }}/k3s.yaml"
+        src: "{{ rke2_config_dir }}/rke2.yaml"
       register: kubeconfig_content
 
     - name: Save kubeconfig locally
@@ -196,14 +255,13 @@
       ansible.builtin.replace:
         path: "{{ local_kubeconfig_path }}"
         regexp: 'https://127\.0\.0\.1:6443'
-        replace: 'https://{{ haproxy_ip }}:{{ k3s_api_port }}'
+        replace: 'https://{{ haproxy_ip }}:{{ rke2_api_port }}'
       delegate_to: localhost
       become: false
 
     - name: Customize kubeconfig for {{ domain }} cluster
       ansible.builtin.shell: |
         # Use sed to rename all 'default' entries to '{{ domain }}'
-        # This is more reliable than using kubectl config commands
         sed -i.bak \
           -e 's/name: default$/name: {{ domain }}/g' \
           -e 's/cluster: default$/cluster: {{ domain }}/g' \
@@ -222,13 +280,13 @@
       ansible.builtin.debug:
         msg: |
           ========================================
-          ✅ Kubeconfig {{ domain }} generated!
+          ✅ RKE2 Kubeconfig {{ domain }} generated!
           ========================================
 
           📁 Path: {{ local_kubeconfig_path }}
 
           ✅ Cluster name: {{ domain }}
-          ✅ HAProxy LoadBalancer: {{ haproxy_ip }}:{{ k3s_api_port }}
+          ✅ HAProxy LoadBalancer: {{ haproxy_ip }}:{{ rke2_api_port }}
           ✅ insecure-skip-tls-verify: true (avoids TLS warnings)
           ✅ Context: {{ domain }}
           ✅ User: {{ domain }}

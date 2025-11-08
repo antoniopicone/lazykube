@@ -1,10 +1,43 @@
-# K3s HA Cluster - Ansible Local Setup
+# K3s/RKE2 HA Cluster - Ansible Local Setup
 
-Automated installation of a K3s HA cluster on 3 VMs + 1 HAProxy load balancer with interactive configuration.
+Automated installation of a **K3s** or **RKE2** HA cluster on 3 VMs + 1 HAProxy load balancer with interactive configuration.
 
-## 🎯 Architecture
+## 🎯 Choose Your Distribution
 
-- **3 Master nodes**: K3s control-plane + embedded etcd
+During configuration, you can select between two Kubernetes distributions:
+
+### K3s - Lightweight Kubernetes
+**Pros:**
+- Minimal resource usage (~512MB RAM per node)
+- Quick installation (<2 minutes)
+- Single binary (~50MB)
+- Perfect for development, edge, IoT
+- SQLite or etcd backend options
+
+**Cons:**
+- Less focus on compliance certifications
+- Simplified architecture
+
+**Best for:** Development/Test, Edge Computing, IoT, Resource-constrained environments
+
+### RKE2 - Security-Focused Kubernetes
+**Pros:**
+- FIPS 140-2 compliant (federal/government use)
+- CIS Kubernetes Benchmark compliance by default
+- SELinux support out-of-the-box
+- Better for regulated industries (finance, healthcare)
+- Production-grade security hardening
+
+**Cons:**
+- Higher resource usage (~1GB+ RAM per node)
+- Longer installation time (5-10 minutes)
+- Larger footprint (~150MB)
+
+**Best for:** Production, Compliance-required, High-security environments
+
+## 🏗️ Architecture
+
+- **3 Master nodes**: K3s/RKE2 control-plane + embedded etcd
 - **1 HAProxy**: Dedicated load balancer for API (6443), HTTP (80), HTTPS (443), etcd (2379/2380)
 - **MetalLB**: Layer 2 LoadBalancer for internal services
 - **Traefik**: Ingress controller with automatic TLS
@@ -60,6 +93,7 @@ make configure
 ```
 
 The script interactively asks for:
+- **Cluster type**: K3s or RKE2 (with detailed comparison)
 - IP of each VM (3 masters + 1 HAProxy)
 - SSH username for each VM
 - SSH password **or** path to SSH private key
@@ -74,13 +108,17 @@ The script interactively asks for:
 make check
 ```
 
-### 3. Install the cluster (~15-20 minutes)
+### 3. Install the cluster
 
 ```bash
 ./lazykube install
 # or
 make install
 ```
+
+**Installation time depends on cluster type:**
+- K3s: ~5-10 minutes
+- RKE2: ~10-20 minutes (due to larger binaries and additional security features)
 
 **Note:** The default `install` command shows minimal output for a cleaner experience. If you want to see all installation stages and details, use:
 
@@ -138,7 +176,7 @@ You can use either `./lazykube <command>` or `make <command>` syntax.
 
 ### Installation
 
-- `lazykube install` / `make install` - **Install complete K3s HA cluster** (minimal output) ⭐
+- `lazykube install` / `make install` - **Install complete HA cluster** (K3s or RKE2 based on config, minimal output) ⭐
 - `lazykube install-verbose` / `make install-verbose` - Installation with verbose output (shows all stages and details)
 
 ### Verification and Debug
@@ -156,7 +194,7 @@ You can use either `./lazykube <command>` or `make <command>` syntax.
 
 ### Cleanup
 
-- `lazykube uninstall` / `make uninstall` - Remove K3s cluster
+- `lazykube uninstall` / `make uninstall` - Remove cluster (K3s or RKE2)
 - `lazykube clean` / `make clean` - Clean temporary files
 - `lazykube clean-config` / `make clean-config` - Remove configuration
 
@@ -171,6 +209,21 @@ You can use either `./lazykube <command>` or `make <command>` syntax.
 ### 2. Example of interactive configuration:
 
 ```
+Choose your Kubernetes distribution:
+┌────────────────────────────────────────────────────────────────────────┐
+│                    K3s vs RKE2 Comparison                              │
+├────────────────────────────────────────────────────────────────────────┤
+│  K3s - Lightweight Kubernetes                                          │
+│    ✓ Pros: Minimal resources, Quick install, Edge/IoT                 │
+│    ✗ Cons: Less compliance focus                                      │
+│                                                                        │
+│  RKE2 - Security-Focused Kubernetes                                   │
+│    ✓ Pros: FIPS 140-2, CIS compliant, Production-grade security       │
+│    ✗ Cons: Higher resources, Longer install                           │
+└────────────────────────────────────────────────────────────────────────┘
+
+Select cluster type (k3s/rke2) [k3s]: k3s
+
 IP Master 1 [192.168.105.46]: 192.168.1.10
 SSH Username Master 1 [admin]: ubuntu
 SSH Password Master 1: ********
@@ -202,6 +255,7 @@ Timezone [Europe/Rome]:
 all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
+    cluster_type: "k3s"  # or "rke2"
     domain: "k3cluster.local"
     timezone: "Europe/Rome"
 
@@ -229,7 +283,8 @@ all:
 
 ### TLS
 
-- K3s uses TLS for all communications
+- Both K3s and RKE2 use TLS for all communications
+- RKE2 offers enhanced TLS configuration options for compliance
 - HAProxy uses TCP passthrough (does not terminate TLS)
 - cert-manager generates self-signed certificates
 - The kubeconfig uses `insecure-skip-tls-verify: true` (HAProxy IP not in certificate)
@@ -300,7 +355,8 @@ lazykube/
 │
 ├── roles/
 │   ├── haproxy-local/
-│   ├── k3s-local/
+│   ├── k3s-local/              # K3s installation role
+│   ├── rke2-local/             # RKE2 installation role
 │   ├── metallb-local/
 │   ├── cert-manager-local/
 │   └── traefik-local/

@@ -1,0 +1,22 @@
+{{- if .Values.certificate.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "nginx-demo.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nginx-demo.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.certificate.secretName }}
+  duration: {{ .Values.certificate.duration }}
+  renewBefore: {{ .Values.certificate.renewBefore }}
+  subject:
+    organizations:
+      {{- toYaml .Values.certificate.subject.organizations | nindent 6 }}
+  dnsNames:
+    {{- toYaml .Values.certificate.dnsNames | nindent 4 }}
+  issuerRef:
+    name: {{ .Values.certificate.issuerRef.name }}
+    kind: {{ .Values.certificate.issuerRef.kind }}
+    group: {{ .Values.certificate.issuerRef.group }}
+{{- end }}

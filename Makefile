@@ -17,13 +17,13 @@ RED := \033[0;31m
 NC := \033[0m
 
 help: ## Show this help message
-	@echo "$(BLUE)K3s HA Cluster LOCAL - Ansible Automation$(NC)"
+	@echo "$(BLUE)K3s/RKE2 HA Cluster LOCAL - Ansible Automation$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Available commands:$(NC)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-15s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(YELLOW)Initial setup:$(NC)"
-	@echo "  1. ./lazykube configure  # Configure VM IPs and credentials"
+	@echo "  1. ./lazykube configure  # Configure VM IPs, credentials, and cluster type (K3s/RKE2)"
 	@echo "  2. ./lazykube check      # Verify connectivity"
 	@echo "  3. ./lazykube install    # Install cluster"
 	@echo ""
@@ -33,11 +33,11 @@ help: ## Show this help message
 
 configure: ## Configure VM IPs and credentials interactively
 	@echo "$(BLUE)========================================$(NC)"
-	@echo "$(BLUE)K3s HA Cluster Configuration$(NC)"
+	@echo "$(BLUE)K3s/RKE2 HA Cluster Configuration$(NC)"
 	@echo "$(BLUE)========================================$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Required 4 VMs configuration:$(NC)"
-	@echo "  - 3 Master nodes (K3s control-plane + etcd)"
+	@echo "  - 3 Master nodes (control-plane + etcd)"
 	@echo "  - 1 HAProxy Load Balancer"
 	@echo ""
 	@bash scripts/configure-cluster.sh
@@ -67,16 +67,17 @@ ping: ## Test VM connectivity
 	@echo "$(BLUE)Testing VM connectivity...$(NC)"
 	@ansible all -i $(INVENTORY) -m ping
 
-install: ## Install local K3s HA cluster
+install: ## Install local HA cluster (K3s or RKE2 based on config)
 	@if [ ! -f $(CONFIG_FILE) ]; then \
 		echo "$(RED)Error: Cluster not configured!$(NC)"; \
 		echo "$(YELLOW)Run first: ./lazykube configure$(NC)"; \
 		exit 1; \
 	fi
-	@echo "$(BLUE)Installing local K3s HA cluster...$(NC)"
-	@echo "$(YELLOW)This process may take some minutes...$(NC)"
-	@echo ""
-	@ansible-playbook -i $(INVENTORY) $(PLAYBOOK_DIR)/install-cluster-local.yml > /dev/null 2>&1 && \
+	@source $(CONFIG_FILE) && \
+	echo "$(BLUE)Installing local $${CLUSTER_TYPE:-k3s} HA cluster...$(NC)" && \
+	echo "$(YELLOW)This process may take some minutes...$(NC)" && \
+	echo "" && \
+	ansible-playbook -i $(INVENTORY) $(PLAYBOOK_DIR)/install-cluster-local.yml > /dev/null 2>&1 && \
 		(echo "" && echo "$(GREEN)✓ Installation completed!$(NC)" && echo "" && make dns-help) || \
 		(echo "$(RED)✗ Installation failed!$(NC)" && echo "$(YELLOW)Run './lazykube install-verbose' to see details$(NC)" && exit 1)
 
@@ -86,10 +87,11 @@ install-verbose: ## Install with verbose output (shows all stages)
 		echo "$(YELLOW)Run first: ./lazykube configure$(NC)"; \
 		exit 1; \
 	fi
-	@echo "$(BLUE)Installing cluster (verbose mode - showing all stages)...$(NC)"
-	@echo "$(YELLOW)This process may take some minutes...$(NC)"
-	@echo ""
-	@ansible-playbook -i $(INVENTORY) $(PLAYBOOK_DIR)/install-cluster-local.yml -v
+	@source $(CONFIG_FILE) && \
+	echo "$(BLUE)Installing $${CLUSTER_TYPE:-k3s} cluster (verbose mode - showing all stages)...$(NC)" && \
+	echo "$(YELLOW)This process may take some minutes...$(NC)" && \
+	echo "" && \
+	ansible-playbook -i $(INVENTORY) $(PLAYBOOK_DIR)/install-cluster-local.yml -v
 
 verify: ## Verify cluster status
 	@echo "$(BLUE)Verifying cluster status...$(NC)"
@@ -190,20 +192,25 @@ dns-help: ## Show instructions to configure local DNS
 	@echo "$(BLUE)========================================$(NC)"
 	@echo ""
 
-uninstall: ## Remove K3s cluster
-	@echo "$(YELLOW)⚠️  WARNING: Removing K3s cluster$(NC)"
+uninstall: ## Remove cluster (K3s or RKE2)
+	@if [ -f $(CONFIG_FILE) ]; then \
+		source $(CONFIG_FILE) && \
+		echo "$(YELLOW)⚠️  WARNING: Removing $${CLUSTER_TYPE:-k3s} cluster$(NC)"; \
+	else \
+		echo "$(YELLOW)⚠️  WARNING: Removing cluster$(NC)"; \
+	fi
 	@echo -n "Are you sure? [y/N] " && read ans && [ $${ans:-N} = y ]
 	@echo "$(BLUE)Removing cluster...$(NC)"
-	@ansible k3s_masters -i $(INVENTORY) -m shell -a "sudo /usr/local/bin/k3s-uninstall.sh" -b || true
+	@ansible k3s_masters -i $(INVENTORY) -m shell -a "sudo /usr/local/bin/k3s-uninstall.sh 2>/dev/null || sudo /usr/local/bin/rke2-uninstall.sh 2>/dev/null || true" -b || true
 	@ansible haproxy -i $(INVENTORY) -m shell -a "sudo systemctl stop haproxy && sudo apt remove -y haproxy" -b || true
-	@rm -f /tmp/k3s-token-local
+	@rm -f /tmp/k3s-token-local /tmp/rke2-token-local
 	@DOMAIN=$$(grep '^domain:' group_vars/all.yml 2>/dev/null | awk '{print $$2}' | tr -d '"' || echo "k3cluster.local") && \
 	rm -f "$$HOME/.kube/$${DOMAIN}-config.yml"
 	@echo "$(GREEN)Cluster removed$(NC)"
 
 clean: ## Clean temporary files and configuration
 	@echo "$(BLUE)Cleaning temporary files...$(NC)"
-	@rm -f /tmp/k3s-token-local
+	@rm -f /tmp/k3s-token-local /tmp/rke2-token-local
 	@rm -rf /tmp/ansible_facts_local
 	@find . -name "*.retry" -delete
 	@echo "$(GREEN)Cleanup completed$(NC)"
@@ -234,8 +241,12 @@ config: ## Show current configuration
 	@echo "$(BLUE)Configuration:$(NC)"
 	@echo ""
 	@if [ -f $(CONFIG_FILE) ]; then \
-		echo "$(YELLOW)Configured VMs:$(NC)"; \
+		echo "$(YELLOW)Cluster Configuration:$(NC)"; \
 		source $(CONFIG_FILE) && \
+		echo "  Cluster Type: $${CLUSTER_TYPE:-k3s}"; \
+		echo "  Domain:       $${DOMAIN:-k3cluster.local}"; \
+		echo ""; \
+		echo "$(YELLOW)Configured VMs:$(NC)"; \
 		echo "  Master 1: $${MASTER1_IP} (user: $${MASTER1_USER})"; \
 		echo "  Master 2: $${MASTER2_IP} (user: $${MASTER2_USER})"; \
 		echo "  Master 3: $${MASTER3_IP} (user: $${MASTER3_USER})"; \

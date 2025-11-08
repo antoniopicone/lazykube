@@ -1,0 +1,40 @@
+# RKE2 Server Configuration - First Master Node
+# This is the initial server that will create the cluster
+
+# Disable default components (we'll install our own)
+disable:
+  - rke2-ingress-nginx
+  - rke2-metrics-server
+
+# Network configuration
+node-ip: {{ node_ip }}
+advertise-address: {{ node_ip }}
+
+# TLS SANs for API server certificate
+tls-san:
+{% for ip in master_ips %}
+  - {{ ip }}
+{% endfor %}
+  - {{ domain }}
+  - kubernetes.{{ domain }}
+  - api.{{ domain }}
+
+# Cluster domain
+cluster-domain: {{ domain }}
+
+# CNI plugin
+cni: {{ rke2_cni }}
+
+# Write kubeconfig with correct permissions
+write-kubeconfig-mode: "0644"
+
+# Cluster initialization mode
+cluster-init: true
+
+# Enable etcd snapshots for backup
+etcd-snapshot-schedule-cron: "0 */12 * * *"
+etcd-snapshot-retention: 5
+
+# Security: CIS Benchmark profile (RKE2's strength)
+# Uncomment to enable CIS hardening
+# profile: cis-1.23

@@ -48,14 +48,22 @@
   roles:
     - role: haproxy-local
 
-- name: Install K3s HA Cluster (Local Network)
+- name: Install Kubernetes Cluster (K3s or RKE2)
   hosts: k3s_masters
   become: true
   serial: 1
   vars_files:
     - ../group_vars/all.yml
-  roles:
-    - role: k3s-local
+  tasks:
+    - name: Install K3s
+      include_role:
+        name: k3s-local
+      when: cluster_type == "k3s"
+
+    - name: Install RKE2
+      include_role:
+        name: rke2-local
+      when: cluster_type == "rke2"
 
 - name: Configure kubectl on Mac
   hosts: localhost
@@ -67,7 +75,7 @@
       ansible.builtin.debug:
         msg: |
           ========================================
-          K3s Cluster installed successfully!
+          {{ cluster_type | upper }} Cluster installed successfully!
           ========================================
 
           HAProxy Load Balancer: {{ haproxy_ip }}
@@ -83,7 +91,7 @@
           kubectl get nodes -o wide
 
           ✅ HAProxy load balancing active for:
-          - K3s API (6443)
+          - {{ cluster_type | upper }} API (6443)
           - HTTP (80 → NodePort 32080)
           - HTTPS (443 → NodePort 32443)
           - etcd (2379, 2380)
@@ -94,7 +102,8 @@
   vars_files:
     - ../group_vars/all.yml
   environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+    KUBECONFIG: "{{ k3s_config_dir if cluster_type == 'k3s' else rke2_config_dir }}/{{ 'k3s' if cluster_type == 'k3s' else 'rke2' }}.yaml"
+    PATH: "{{ ansible_env.PATH }}:{{ '/var/lib/rancher/rke2/bin' if cluster_type == 'rke2' else '' }}"
   roles:
     - role: metallb-local
 
@@ -104,7 +113,8 @@
   vars_files:
     - ../group_vars/all.yml
   environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+    KUBECONFIG: "{{ k3s_config_dir if cluster_type == 'k3s' else rke2_config_dir }}/{{ 'k3s' if cluster_type == 'k3s' else 'rke2' }}.yaml"
+    PATH: "{{ ansible_env.PATH }}:{{ '/var/lib/rancher/rke2/bin' if cluster_type == 'rke2' else '' }}"
   roles:
     - role: cert-manager-local
 
@@ -114,7 +124,8 @@
   vars_files:
     - ../group_vars/all.yml
   environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+    KUBECONFIG: "{{ k3s_config_dir if cluster_type == 'k3s' else rke2_config_dir }}/{{ 'k3s' if cluster_type == 'k3s' else 'rke2' }}.yaml"
+    PATH: "{{ ansible_env.PATH }}:{{ '/var/lib/rancher/rke2/bin' if cluster_type == 'rke2' else '' }}"
   roles:
     - role: traefik-local
 
@@ -173,7 +184,8 @@
   vars_files:
     - ../group_vars/all.yml
   environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+    KUBECONFIG: "{{ k3s_config_dir if cluster_type == 'k3s' else rke2_config_dir }}/{{ 'k3s' if cluster_type == 'k3s' else 'rke2' }}.yaml"
+    PATH: "{{ ansible_env.PATH }}:{{ '/var/lib/rancher/rke2/bin' if cluster_type == 'rke2' else '' }}"
   tasks:
     - name: Get all nodes
       kubernetes.core.k8s_info:
@@ -208,7 +220,7 @@
       ansible.builtin.debug:
         msg: |
           ============================================================
-          LOCAL K3S HA CLUSTER INSTALLATION COMPLETED!
+          LOCAL {{ cluster_type | upper }} HA CLUSTER INSTALLATION COMPLETED!
           ============================================================
 
           CLUSTER NODES:

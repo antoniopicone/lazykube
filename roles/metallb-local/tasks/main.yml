@@ -24,7 +24,7 @@
   retries: 30
   delay: 5
   environment:
-    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+    KUBECONFIG: "{{ rke2_config_dir if cluster_type == 'rke2' else k3s_config_dir }}/{{ 'rke2.yaml' if cluster_type == 'rke2' else 'k3s.yaml' }}"
   when: is_first_master | default(false)
   changed_when: false
 
@@ -108,10 +108,10 @@
 - name: Display MetalLB status
   ansible.builtin.debug:
     msg: |
-      MetalLB installato con successo!
+      MetalLB installed successfully!
       Pods: {{ metallb_pods.resources | length }}
       IP Pool: {{ metallb_ip_range }}
 
-      ⚠️  NOTA: MetalLB Layer 2 funziona sulla rete locale.
-      Assicurati che il range IP sia nella stessa subnet delle VM.
+      ⚠️  NOTE: MetalLB Layer 2 works on the local network.
+      Make sure the IP range is in the same subnet as the VMs.
   when: is_first_master | default(false)

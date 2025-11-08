@@ -114,6 +114,58 @@ echo ""
 
 # Additional configurations
 echo -e "${BLUE}--- Cluster Configuration ---${NC}"
+
+# Cluster type selection with comparison
+echo -e "${YELLOW}Choose your Kubernetes distribution:${NC}"
+echo ""
+echo -e "${BLUE}┌────────────────────────────────────────────────────────────────────────┐${NC}"
+echo -e "${BLUE}│                    K3s vs RKE2 Comparison                              │${NC}"
+echo -e "${BLUE}├────────────────────────────────────────────────────────────────────────┤${NC}"
+echo -e "${BLUE}│                                                                        │${NC}"
+echo -e "${BLUE}│  ${GREEN}K3s${NC} - Lightweight Kubernetes                                       ${BLUE}│${NC}"
+echo -e "${BLUE}│    ${GREEN}✓${NC} Pros:                                                           ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Minimal resource usage (~512MB RAM per node)                   ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Quick installation (<2 minutes)                                 ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Single binary (~50MB)                                           ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Perfect for development, edge, IoT                              ${BLUE}│${NC}"
+echo -e "${BLUE}│      • SQLite or etcd backend options                                  ${BLUE}│${NC}"
+echo -e "${BLUE}│    ${RED}✗${NC} Cons:                                                           ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Less focus on compliance certifications                         ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Simplified architecture (may not suit all production needs)     ${BLUE}│${NC}"
+echo -e "${BLUE}│                                                                        │${NC}"
+echo -e "${BLUE}│  ${GREEN}RKE2${NC} - Security-Focused Kubernetes                                  ${BLUE}│${NC}"
+echo -e "${BLUE}│    ${GREEN}✓${NC} Pros:                                                           ${BLUE}│${NC}"
+echo -e "${BLUE}│      • FIPS 140-2 compliant (federal/government use)                   ${BLUE}│${NC}"
+echo -e "${BLUE}│      • CIS Kubernetes Benchmark compliance by default                  ${BLUE}│${NC}"
+echo -e "${BLUE}│      • SELinux support out-of-the-box                                  ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Better for regulated industries (finance, healthcare)           ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Production-grade security hardening                             ${BLUE}│${NC}"
+echo -e "${BLUE}│    ${RED}✗${NC} Cons:                                                           ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Higher resource usage (~1GB+ RAM per node)                      ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Longer installation time (5-10 minutes)                         ${BLUE}│${NC}"
+echo -e "${BLUE}│      • Larger footprint (~150MB)                                       ${BLUE}│${NC}"
+echo -e "${BLUE}│                                                                        │${NC}"
+echo -e "${BLUE}│  ${YELLOW}Use Cases:${NC}                                                         ${BLUE}│${NC}"
+echo -e "${BLUE}│    • K3s:  Dev/Test, Edge Computing, IoT, Resource-constrained        ${BLUE}│${NC}"
+echo -e "${BLUE}│    • RKE2: Production, Compliance-required, High-security environments ${BLUE}│${NC}"
+echo -e "${BLUE}│                                                                        │${NC}"
+echo -e "${BLUE}└────────────────────────────────────────────────────────────────────────┘${NC}"
+echo ""
+
+# Read cluster type with validation
+while true; do
+    read_with_default "Select cluster type (k3s/rke2)" "${CLUSTER_TYPE:-k3s}" CLUSTER_TYPE
+    CLUSTER_TYPE=$(echo "$CLUSTER_TYPE" | tr '[:upper:]' '[:lower:]')
+    if [[ "$CLUSTER_TYPE" == "k3s" ]] || [[ "$CLUSTER_TYPE" == "rke2" ]]; then
+        break
+    else
+        echo -e "${RED}Invalid cluster type. Please enter 'k3s' or 'rke2'${NC}"
+    fi
+done
+
+echo -e "${GREEN}✓ Selected: $CLUSTER_TYPE${NC}"
+echo ""
+
 read_with_default "Cluster domain" "${DOMAIN:-k3cluster.local}" DOMAIN
 read_with_default "Timezone" "${TIMEZONE:-Europe/Rome}" TIMEZONE
 echo ""
@@ -149,6 +201,7 @@ HAPROXY_PASSWORD="$HAPROXY_PASSWORD"
 HAPROXY_SSH_KEY="$HAPROXY_SSH_KEY"
 
 # Cluster config
+CLUSTER_TYPE="$CLUSTER_TYPE"
 DOMAIN="$DOMAIN"
 TIMEZONE="$TIMEZONE"
 EOF
@@ -170,6 +223,7 @@ cat > "$INVENTORY_FILE" << EOF
 all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
+    cluster_type: "$CLUSTER_TYPE"
     domain: "$DOMAIN"
     timezone: "$TIMEZONE"
 
@@ -266,8 +320,14 @@ if [ -f "$GROUP_VARS" ]; then
   - \"$HAPROXY_IP\"
     }" "$GROUP_VARS"
 
-    # Update domain if different
+    # Update domain
     sed -i.tmp "s/^domain:.*/domain: \"$DOMAIN\"/" "$GROUP_VARS"
+
+    # Update cluster_name to match domain
+    sed -i.tmp "s/^cluster_name:.*/cluster_name: \"$DOMAIN\"/" "$GROUP_VARS"
+
+    # Update cluster_type
+    sed -i.tmp "s/^cluster_type:.*/cluster_type: \"$CLUSTER_TYPE\"/" "$GROUP_VARS"
 
     rm -f "$GROUP_VARS.tmp"
 
@@ -282,6 +342,7 @@ echo -e "${GREEN}✅ Configuration completed!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${YELLOW}Summary:${NC}"
+echo "  Cluster Type: $CLUSTER_TYPE"
 echo "  Master 1: $MASTER1_IP (user: $MASTER1_USER)"
 echo "  Master 2: $MASTER2_IP (user: $MASTER2_USER)"
 echo "  Master 3: $MASTER3_IP (user: $MASTER3_USER)"
@@ -290,5 +351,5 @@ echo "  Domain:   $DOMAIN"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo "  1. ./lazykube check    # Verify SSH connectivity"
-echo "  2. ./lazykube install  # Install K3s HA cluster"
+echo "  2. ./lazykube install  # Install $CLUSTER_TYPE HA cluster"
 echo ""
