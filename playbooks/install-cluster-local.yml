@@ -107,6 +107,17 @@
   roles:
     - role: metallb-local
 
+- name: Install Metrics Server
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir if cluster_type == 'k3s' else rke2_config_dir }}/{{ 'k3s' if cluster_type == 'k3s' else 'rke2' }}.yaml"
+    PATH: "{{ ansible_env.PATH }}:{{ '/var/lib/rancher/rke2/bin' if cluster_type == 'rke2' else '' }}"
+  roles:
+    - role: metrics-server-local
+
 - name: Install cert-manager with self-signed certificates
   hosts: k3s_masters[0]
   become: true

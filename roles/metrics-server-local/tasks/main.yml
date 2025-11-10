@@ -1,0 +1,56 @@
+---
+# Role - Installation of Metrics Server for resource monitoring
+
+- name: Install Metrics Server
+  kubernetes.core.k8s:
+    state: present
+    src: "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+  when:
+    - is_first_master | default(false)
+    - install_metrics_server | default(true)
+
+- name: Wait for Metrics Server to be ready
+  ansible.builtin.shell: |
+    kubectl get pods -n kube-system --no-headers 2>/dev/null | grep metrics-server | grep -c Running || echo "0"
+  register: metrics_server_ready
+  until: metrics_server_ready.stdout | int >= 1
+  retries: 30
+  delay: 5
+  environment:
+    KUBECONFIG: "{{ rke2_config_dir if cluster_type == 'rke2' else k3s_config_dir }}/{{ 'rke2.yaml' if cluster_type == 'rke2' else 'k3s.yaml' }}"
+  when:
+    - is_first_master | default(false)
+    - install_metrics_server | default(true)
+  changed_when: false
+
+- name: Test Metrics Server
+  ansible.builtin.shell: |
+    kubectl top nodes --no-headers | wc -l
+  register: metrics_test
+  environment:
+    KUBECONFIG: "{{ rke2_config_dir if cluster_type == 'rke2' else k3s_config_dir }}/{{ 'rke2.yaml' if cluster_type == 'rke2' else 'k3s.yaml' }}"
+  when:
+    - is_first_master | default(false)
+    - install_metrics_server | default(true)
+  changed_when: false
+  ignore_errors: true
+
+- name: Display Metrics Server status
+  ansible.builtin.debug:
+    msg: |
+      Metrics Server installed successfully!
+
+      You can now use:
+      - kubectl top nodes       # View node CPU/RAM usage
+      - kubectl top pods        # View pod CPU/RAM usage
+      - kubectl top pods -A     # View all pods across namespaces
+
+      The Metrics Server enables:
+      - Resource monitoring with kubectl top
+      - Horizontal Pod Autoscaler (HPA)
+      - Vertical Pod Autoscaler (VPA)
+
+      Nodes reporting metrics: {{ metrics_test.stdout | default('0') }}
+  when:
+    - is_first_master | default(false)
+    - install_metrics_server | default(true)

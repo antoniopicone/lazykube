@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 
-# LazyKube - K3s/RKE2 HA Cluster Management Tool
-# Wrapper script for Makefile commands
+# LazyKube - K3s/RKE2 HA Cluster Management Tool (Multi-Cluster Edition)
+# Wrapper script for Makefile commands with cluster management
 
 set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# LazyKube home
+LAZYKUBE_HOME="${HOME}/.lazykube"
+CURRENT_CLUSTER_FILE="${LAZYKUBE_HOME}/current-cluster"
 
 # Colors
 BLUE='\033[0;34m'
@@ -61,16 +65,167 @@ requires_ansible() {
     return 1
 }
 
+# Get current cluster configuration
+get_cluster_config() {
+    mkdir -p "${LAZYKUBE_HOME}"
+
+    local current_cluster=$(cat "${CURRENT_CLUSTER_FILE}" 2>/dev/null || echo "")
+
+    if [ -z "${current_cluster}" ]; then
+        return 1
+    fi
+
+    local cluster_path="${LAZYKUBE_HOME}/clusters/${current_cluster}"
+
+    if [ ! -d "${cluster_path}" ]; then
+        return 1
+    fi
+
+    echo "${cluster_path}"
+    return 0
+}
+
+# Link cluster config to project directory
+link_cluster_config() {
+    local cluster_path=$(get_cluster_config)
+
+    if [ -z "${cluster_path}" ]; then
+        echo -e "${RED}Error: No cluster configured.${NC}"
+        echo "Run 'lazykube configure' to set up a cluster."
+        exit 1
+    fi
+
+    # Create symlinks to cluster config
+    ln -sf "${cluster_path}/hosts.yml" "${SCRIPT_DIR}/inventories/hosts.yml" 2>/dev/null || true
+    ln -sf "${cluster_path}/all.yml" "${SCRIPT_DIR}/group_vars/all.yml" 2>/dev/null || true
+    ln -sf "${cluster_path}/.cluster-config" "${SCRIPT_DIR}/.cluster-config" 2>/dev/null || true
+
+    # Use cluster-specific ansible.cfg if available
+    if [ -f "${cluster_path}/ansible.cfg" ]; then
+        export ANSIBLE_CONFIG="${cluster_path}/ansible.cfg"
+    fi
+}
+
+# Show cluster info
+show_cluster_banner() {
+    local cluster_path=$(get_cluster_config)
+
+    if [ -n "${cluster_path}" ]; then
+        local cluster_name=$(basename "${cluster_path}")
+        echo -e "${GREEN}Current cluster: ${cluster_name}${NC}"
+
+        if [ -f "${cluster_path}/cluster-info.txt" ]; then
+            cat "${cluster_path}/cluster-info.txt" | while read line; do
+                echo -e "${BLUE}  ${line}${NC}"
+            done
+        fi
+        echo ""
+    fi
+}
+
+# Show help with cluster commands
+show_help() {
+    cd "$SCRIPT_DIR"
+
+    echo -e "${BLUE}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}           LazyKube - Multi-Cluster Management             ${NC}"
+    echo -e "${BLUE}════════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    show_cluster_banner
+
+    echo -e "${YELLOW}Cluster Management:${NC}"
+    echo "  lazykube cluster list                # List all clusters"
+    echo "  lazykube cluster create <name>       # Create new cluster"
+    echo "  lazykube cluster switch <name>       # Switch to cluster"
+    echo "  lazykube cluster delete <name>       # Delete cluster config"
+    echo "  lazykube cluster current             # Show current cluster"
+    echo "  lazykube cluster info [name]         # Show cluster details"
+    echo ""
+
+    echo -e "${YELLOW}Configuration:${NC}"
+    echo "  lazykube configure                   # Configure cluster (multi-cluster, LazyLinux)"
+    echo ""
+
+    echo -e "${YELLOW}Cluster Operations:${NC}"
+    echo "  lazykube check                       # Verify prerequisites"
+    echo "  lazykube ping                        # Test VM connectivity"
+    echo "  lazykube install                     # Install K3s/RKE2 cluster"
+    echo "  lazykube install-verbose             # Install with verbose output"
+    echo "  lazykube verify                      # Verify cluster status"
+    echo "  lazykube uninstall                   # Remove cluster"
+    echo ""
+
+    echo -e "${YELLOW}Monitoring & Access:${NC}"
+    echo "  lazykube logs                        # Show component logs"
+    echo "  lazykube dashboard                   # Open Traefik dashboard"
+    echo "  lazykube haproxy-stats               # Open HAProxy stats"
+    echo "  lazykube dns-help                    # Show DNS configuration help"
+    echo ""
+
+    echo -e "${YELLOW}Configuration & Tools:${NC}"
+    echo "  lazykube config                      # Show current configuration"
+    echo "  lazykube kubeconfig                  # Show kubeconfig info"
+    echo "  lazykube fix-kubeconfig              # Fix kubeconfig names"
+    echo "  lazykube trust-ca                    # Import CA certificate"
+    echo "  lazykube clean                       # Clean temporary files"
+    echo "  lazykube clean-config                # Remove cluster configuration"
+    echo ""
+
+    echo -e "${YELLOW}Quick Start:${NC}"
+    echo "  1. lazykube cluster create production"
+    echo "  2. lazykube configure"
+    echo "  3. lazykube install"
+    echo "  4. lazykube verify"
+    echo ""
+
+    echo -e "${GREEN}Documentation:${NC} See docs/MULTI-CLUSTER.md for detailed multi-cluster guide"
+    echo ""
+}
+
+# Handle cluster subcommands
+handle_cluster_command() {
+    local subcommand=$1
+    shift
+
+    case "${subcommand}" in
+        list|create|delete|switch|use|current|path|info)
+            "${SCRIPT_DIR}/scripts/cluster-manager.sh" "${subcommand}" "$@"
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown cluster command '${subcommand}'${NC}"
+            echo ""
+            echo "Available cluster commands:"
+            echo "  list    - List all clusters"
+            echo "  create  - Create new cluster"
+            echo "  switch  - Switch to another cluster"
+            echo "  delete  - Delete cluster configuration"
+            echo "  current - Show current cluster"
+            echo "  info    - Show cluster details"
+            exit 1
+            ;;
+    esac
+}
+
 # Show usage if no arguments provided
 if [ $# -eq 0 ]; then
-    cd "$SCRIPT_DIR"
-    make help
+    show_help
     exit 0
 fi
 
 # Get the command
 COMMAND=$1
 shift
+
+# Handle cluster management commands
+if [ "$COMMAND" = "cluster" ]; then
+    if [ $# -eq 0 ]; then
+        "${SCRIPT_DIR}/scripts/cluster-manager.sh" list
+    else
+        handle_cluster_command "$@"
+    fi
+    exit 0
+fi
 
 # Valid commands that map to Makefile targets
 VALID_COMMANDS=(
@@ -106,11 +261,31 @@ is_valid_command() {
     return 1
 }
 
-# Execute the command
+# Handle help command
+if [ "$COMMAND" = "help" ]; then
+    show_help
+    exit 0
+fi
+
+# Handle configure command
+if [ "$COMMAND" = "configure" ] || [ "$COMMAND" = "config" ]; then
+    "${SCRIPT_DIR}/scripts/configure-cluster.sh"
+    exit 0
+fi
+
+# For other commands, link cluster config and execute
 if is_valid_command "$COMMAND"; then
     # Check if Ansible is required for this command
     if requires_ansible "$COMMAND"; then
         check_ansible
+    fi
+
+    # Link cluster configuration
+    link_cluster_config
+
+    # Show current cluster
+    if [ "$COMMAND" != "clean" ] && [ "$COMMAND" != "clean-config" ]; then
+        show_cluster_banner
     fi
 
     cd "$SCRIPT_DIR"

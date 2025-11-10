@@ -1,6 +1,15 @@
-# K3s/RKE2 HA Cluster - Ansible Local Setup
+# LazyKube - Multi-Cluster Kubernetes Management
 
-Automated installation of a **K3s** or **RKE2** HA cluster on 3 VMs + 1 HAProxy load balancer with interactive configuration.
+Automated installation and management of **multiple K3s or RKE2** HA clusters with interactive configuration, LazyLinux integration, and simplified SSH setup.
+
+## ✨ New Features
+
+- 🚀 **Multi-Cluster Management** - Create and manage unlimited Kubernetes clusters
+- 🔄 **Easy Cluster Switching** - Switch between clusters with a single command
+- 🔐 **Improved SSH Auth** - Choose SSH key OR password (not both) per node
+- 🤖 **LazyLinux Integration** - Optional automatic VM creation
+- 💾 **Persistent Config** - Configurations stored in `~/.lazykube/` (survives project directory changes)
+- 📊 **Better UX** - Interactive cluster type comparison and streamlined setup
 
 ## 🎯 Choose Your Distribution
 
@@ -42,6 +51,7 @@ During configuration, you can select between two Kubernetes distributions:
 - **MetalLB**: Layer 2 LoadBalancer for internal services
 - **Traefik**: Ingress controller with automatic TLS
 - **cert-manager**: Self-signed certificate management
+- **Metrics Server**: Resource monitoring (kubectl top nodes/pods)
 
 ## 📋 Prerequisites
 
@@ -52,10 +62,42 @@ During configuration, you can select between two Kubernetes distributions:
 
 ## 🚀 Quick Start
 
-### Option 1: Using the `lazykube` command (Recommended)
+### Option 1: Single Cluster (Simple)
 
 ```bash
-# The script is already executable, just run:
+# Create your first cluster
+./lazykube cluster create production
+./lazykube configure   # Interactive configuration
+./lazykube install     # Deploy the cluster
+./lazykube verify      # Verify installation
+```
+
+### Option 2: Multiple Clusters (Advanced)
+
+```bash
+# Create production cluster
+./lazykube cluster create prod
+./lazykube configure   # Select RKE2, production IPs
+./lazykube install
+
+# Create development cluster
+./lazykube cluster create dev
+./lazykube configure   # Select K3s, dev IPs
+./lazykube install
+
+# Switch between clusters
+./lazykube cluster list
+./lazykube cluster switch dev
+./lazykube verify
+```
+
+### Option 3: Legacy (Existing Users)
+
+```bash
+# Migrate your existing cluster first
+./scripts/migrate-existing-cluster.sh
+
+# Then use as before
 ./lazykube configure
 ./lazykube install
 ./lazykube verify
@@ -197,6 +239,57 @@ You can use either `./lazykube <command>` or `make <command>` syntax.
 - `lazykube uninstall` / `make uninstall` - Remove cluster (K3s or RKE2)
 - `lazykube clean` / `make clean` - Clean temporary files
 - `lazykube clean-config` / `make clean-config` - Remove configuration
+
+## 📊 Resource Monitoring
+
+The cluster includes **Metrics Server** for real-time resource monitoring:
+
+```bash
+# View node resource usage (CPU, RAM)
+kubectl top nodes
+
+# View pod resource usage
+kubectl top pods -A
+
+# Monitor specific namespace
+kubectl top pods -n kube-system
+
+# Sort by CPU usage
+kubectl top pods -A --sort-by=cpu
+
+# Sort by memory usage
+kubectl top pods -A --sort-by=memory
+```
+
+### What Metrics Server Enables:
+
+1. **kubectl top** - Real-time CPU/RAM monitoring
+2. **Horizontal Pod Autoscaler (HPA)** - Automatic scaling based on metrics
+3. **Vertical Pod Autoscaler (VPA)** - Automatic resource requests/limits optimization
+4. **Kubernetes Dashboard** - Resource usage graphs
+
+### Example HPA Configuration:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+```
 
 ## 🔧 How It Works
 
@@ -394,8 +487,49 @@ kubectl get nodes            # After merging kubeconfig
 ./lazykube dashboard      # https://traefik.k3cluster.local/dashboard/
 ```
 
+## 📖 Quick Command Reference
+
+### Multi-Cluster Commands
+```bash
+./lazykube cluster list              # List all clusters
+./lazykube cluster create <name>     # Create new cluster
+./lazykube cluster switch <name>     # Switch to cluster
+./lazykube cluster current           # Show current cluster
+./lazykube cluster info [name]       # Show cluster details
+./lazykube cluster delete <name>     # Delete cluster config
+```
+
+### Cluster Operations
+```bash
+./lazykube configure                 # Interactive configuration
+./lazykube install                   # Install cluster
+./lazykube install-verbose           # Install with verbose output
+./lazykube verify                    # Verify installation
+./lazykube ping                      # Test connectivity
+./lazykube uninstall                 # Uninstall cluster
+```
+
+### Access & Monitoring
+```bash
+./lazykube dashboard                 # Traefik dashboard
+./lazykube haproxy-stats            # HAProxy stats
+./lazykube logs                      # Component logs
+kubectl top nodes                    # Node resources (Metrics Server)
+kubectl top pods -A                  # Pod resources
+```
+
+### Configuration
+```bash
+./lazykube dns-help                  # DNS setup instructions
+./lazykube kubeconfig                # Kubeconfig merge guide
+./lazykube trust-ca                  # Import CA certificate
+```
+
 ## 📚 Additional Documentation
 
+- [docs/MULTI-CLUSTER.md](docs/MULTI-CLUSTER.md) - **Multi-Cluster Management** - Create, switch, and manage multiple clusters
+- [docs/CNI.md](docs/CNI.md) - **Container Network Interface** - What it is, how to verify, and troubleshooting
+- [docs/MONITORING.md](docs/MONITORING.md) - Prometheus + Grafana monitoring setup
 - [HAPROXY-SETUP.md](HAPROXY-SETUP.md) - Detailed HAProxy guide
 - [FIX-TLS-CERTIFICATE.md](FIX-TLS-CERTIFICATE.md) - TLS troubleshooting
 - [QUICK-START-HAPROXY.md](QUICK-START-HAPROXY.md) - Manual quick start

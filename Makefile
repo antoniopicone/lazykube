@@ -22,13 +22,10 @@ help: ## Show this help message
 	@echo "$(YELLOW)Available commands:$(NC)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-15s$(NC) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(YELLOW)Initial setup:$(NC)"
-	@echo "  1. ./lazykube configure  # Configure VM IPs, credentials, and cluster type (K3s/RKE2)"
-	@echo "  2. ./lazykube check      # Verify connectivity"
-	@echo "  3. ./lazykube install    # Install cluster"
-	@echo ""
-	@echo "$(YELLOW)Or use make commands:$(NC)"
-	@echo "  make configure && make check && make install"
+	@echo "$(YELLOW)Note:$(NC) Use './lazykube help' for full command list including:"
+	@echo "  • Multi-cluster management (create, switch, delete clusters)"
+	@echo "  • Enhanced configuration with LazyLinux integration"
+	@echo "  • All cluster operations (install, verify, uninstall)"
 	@echo ""
 
 configure: ## Configure VM IPs and credentials interactively
