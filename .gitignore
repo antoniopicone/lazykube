@@ -1,5 +1,11 @@
-# Cluster configuration with credentials
+# User configuration directory (should not be in repo)
+# Users create this via 'lazykube configure'
+.lazykube/
+
+# Legacy cluster configuration (old structure)
 .cluster-config
+inventories/hosts.yml
+group_vars/all.yml.backup-*
 
 # Backup files
 *.backup-*
@@ -23,3 +29,10 @@ venv/
 
 # macOS
 .DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

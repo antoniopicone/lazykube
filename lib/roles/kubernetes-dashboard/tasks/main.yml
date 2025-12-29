@@ -1,0 +1,220 @@
+---
+# Kubernetes Dashboard installation for K3s cluster
+# This role installs the Kubernetes Dashboard with proper RBAC and Ingress configuration
+
+- name: Create kubernetes-dashboard namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: kubernetes-dashboard
+  when: is_first_master | default(false)
+
+- name: Add Kubernetes Dashboard Helm repository
+  shell: |
+    helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/
+    helm repo update
+  when: is_first_master | default(false)
+
+- name: Install Kubernetes Dashboard via Helm
+  kubernetes.core.helm:
+    name: kubernetes-dashboard
+    chart_ref: kubernetes-dashboard/kubernetes-dashboard
+    release_namespace: kubernetes-dashboard
+    create_namespace: false
+    values:
+      app:
+        ingress:
+          enabled: false
+      metrics-scraper:
+        enabled: true
+  when: is_first_master | default(false)
+
+- name: Wait for Dashboard pods to be ready
+  shell: |
+    kubectl get pods -n kubernetes-dashboard --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l
+  register: dashboard_pods_count
+  until: dashboard_pods_count.stdout | int >= 2
+  retries: 30
+  delay: 10
+  when: is_first_master | default(false)
+
+- name: Create Dashboard Admin Service Account
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: dashboard-admin
+        namespace: kubernetes-dashboard
+  when: is_first_master | default(false)
+
+- name: Create Dashboard Admin ClusterRoleBinding
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: dashboard-admin
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+      - kind: ServiceAccount
+        name: dashboard-admin
+        namespace: kubernetes-dashboard
+  when: is_first_master | default(false)
+
+- name: Create Dashboard Admin Token Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: dashboard-admin-token
+        namespace: kubernetes-dashboard
+        annotations:
+          kubernetes.io/service-account.name: dashboard-admin
+      type: kubernetes.io/service-account-token
+  when: is_first_master | default(false)
+
+- name: Wait for token to be created
+  shell: |
+    kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' 2>/dev/null || echo ""
+  register: token_check
+  until: token_check.stdout != ""
+  retries: 10
+  delay: 3
+  when: is_first_master | default(false)
+
+- name: Get Dashboard admin token
+  shell: |
+    kubectl get secret dashboard-admin-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 -d
+  register: dashboard_token_raw
+  when: is_first_master | default(false)
+
+- name: Set Dashboard token fact
+  set_fact:
+    dashboard_token: "{{ dashboard_token_raw.stdout }}"
+  when: is_first_master | default(false)
+
+- name: Create Certificate for Dashboard
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: kubernetes-dashboard-tls
+        namespace: kubernetes-dashboard
+      spec:
+        secretName: kubernetes-dashboard-tls
+        issuerRef:
+          name: ca-issuer
+          kind: ClusterIssuer
+        dnsNames:
+          - "dashboard.{{ domain }}"
+  when: is_first_master | default(false)
+
+- name: Wait for Dashboard certificate
+  shell: |
+    kubectl get certificate kubernetes-dashboard-tls -n kubernetes-dashboard -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False"
+  register: cert_status
+  until: cert_status.stdout == "True"
+  retries: 20
+  delay: 5
+  when: is_first_master | default(false)
+
+- name: Get Kong proxy service name
+  shell: |
+    kubectl get svc -n kubernetes-dashboard --no-headers 2>/dev/null | grep kong-proxy | awk '{print $1}' | head -1
+  register: kong_service_output
+  when: is_first_master | default(false)
+
+- name: Create ServersTransport for Dashboard (HTTPS backend)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: ServersTransport
+      metadata:
+        name: dashboard-transport
+        namespace: kubernetes-dashboard
+      spec:
+        serverName: "{{ kong_service_output.stdout }}"
+        insecureSkipVerify: true
+  when: is_first_master | default(false)
+
+- name: Create IngressRoute for Dashboard
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: kubernetes-dashboard
+        namespace: kubernetes-dashboard
+      spec:
+        entryPoints:
+          - websecure
+        routes:
+          - match: "Host(`dashboard.{{ domain }}`)"
+            kind: Rule
+            services:
+              - name: "{{ kong_service_output.stdout }}"
+                port: 443
+                scheme: https
+                serversTransport: dashboard-transport
+        tls:
+          secretName: kubernetes-dashboard-tls
+  when: is_first_master | default(false)
+
+- name: Save Dashboard token to local file
+  copy:
+    content: "{{ dashboard_token }}"
+    dest: "{{ local_kubeconfig_path | dirname }}/dashboard-token.txt"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: is_first_master | default(false)
+
+- name: Display Dashboard installation summary
+  debug:
+    msg: |
+      ========================================
+      ✅ Kubernetes Dashboard Installed!
+      ========================================
+
+      Dashboard URL: https://dashboard.{{ domain }}
+
+      📋 ACCESS TOKEN (saved to dashboard-token.txt):
+      {{ dashboard_token }}
+
+      ========================================
+      🔐 HOW TO ACCESS THE DASHBOARD
+      ========================================
+
+      1. Add to /etc/hosts:
+         {{ hostvars[groups['haproxy'][0]]['ansible_host'] }}  dashboard.{{ domain }}
+
+      2. Open in browser:
+         https://dashboard.{{ domain }}
+
+      3. Select "Token" authentication and paste the token above
+
+      ========================================
+      🛡️  SECURITY NOTES
+      ========================================
+
+      ⚠️  The dashboard-admin service account has cluster-admin privileges!
+      ⚠️  Keep the token secure and do not share it.
+      ⚠️  The dashboard is accessible only via Traefik with TLS.
+
+      ========================================
+  when: is_first_master | default(false)

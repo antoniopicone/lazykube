@@ -1,0 +1,508 @@
+#!/usr/bin/env bash
+
+# LazyKube - K3s HA Cluster Management Tool
+# Main command-line interface
+
+set -e
+
+# Version
+LAZYKUBE_VERSION="2.0.0"
+
+# Detect installation mode
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -f "$SCRIPT_DIR/../lib/Makefile" ]; then
+    # Running from source tree
+    LAZYKUBE_LIB_DIR="$SCRIPT_DIR/../lib"
+    LAZYKUBE_SHARE_DIR="$SCRIPT_DIR/../share"
+    INSTALL_MODE="source"
+else
+    # Running from installed location
+    LAZYKUBE_LIB_DIR="${LAZYKUBE_LIB_DIR:-/usr/local/lib/lazykube}"
+    LAZYKUBE_SHARE_DIR="${LAZYKUBE_SHARE_DIR:-/usr/local/share/lazykube}"
+    INSTALL_MODE="installed"
+fi
+
+# Export paths
+export LAZYKUBE_LIB_DIR
+export LAZYKUBE_SHARE_DIR
+
+# User config directory
+LAZYKUBE_CONFIG_DIR="${LAZYKUBE_CONFIG_DIR:-${HOME}/.lazykube}"
+export LAZYKUBE_CONFIG_DIR
+
+CLUSTERS_DIR="${LAZYKUBE_CONFIG_DIR}/clusters"
+LAZYLINUX_DIR="${LAZYKUBE_CONFIG_DIR}/lazylinux"
+
+# Colors
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# Load helper functions
+if [ -f "${LAZYKUBE_LIB_DIR}/scripts/helpers.sh" ]; then
+    source "${LAZYKUBE_LIB_DIR}/scripts/helpers.sh"
+fi
+
+# ============================================
+# Command Functions
+# ============================================
+
+# Show help
+show_help() {
+    cat << EOF
+${BLUE}LazyKube v${LAZYKUBE_VERSION} - K3s HA Cluster Management Tool${NC}
+
+${YELLOW}Usage:${NC}
+  lazykube <command> [options]
+
+${YELLOW}Commands:${NC}
+  ${GREEN}create <cluster_name>${NC}   Create a new K3s HA cluster with VMs
+  ${GREEN}list${NC}                    Show all available clusters
+  ${GREEN}delete <cluster_name>${NC}   Stop VMs and delete cluster
+  ${GREEN}dashboard <cluster_name>${NC} Expose and open K3s dashboard
+
+${YELLOW}Management Commands:${NC}
+  ${GREEN}install${NC}                 Install lazykube to system
+  ${GREEN}uninstall${NC}               Uninstall lazykube from system
+  ${GREEN}version${NC}                 Show version information
+
+${YELLOW}Examples:${NC}
+  lazykube create my-cluster
+  lazykube list
+  lazykube dashboard my-cluster
+  lazykube delete my-cluster
+
+${YELLOW}For more information:${NC}
+  Run 'man lazykube' or visit https://github.com/antoniopicone/lazykube
+
+EOF
+}
+
+# Create a new cluster
+cmd_create() {
+    local cluster_name=$1
+
+    if [ -z "$cluster_name" ]; then
+        echo -e "${RED}Error: Cluster name required${NC}"
+        echo "Usage: lazykube create <cluster_name>"
+        exit 1
+    fi
+
+    # Validate cluster name
+    validate_cluster_name "$cluster_name"
+
+    # Check if cluster already exists
+    if cluster_exists "$cluster_name"; then
+        echo -e "${RED}Error: Cluster '$cluster_name' already exists${NC}"
+        echo "Use 'lazykube list' to see existing clusters"
+        exit 1
+    fi
+
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}Creating K3s HA Cluster: ${cluster_name}${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+
+    # Step 1: Install dependencies
+    echo -e "${YELLOW}Step 1/4: Checking dependencies...${NC}"
+    install_all_dependencies
+
+    # Step 2: Create cluster directory
+    echo -e "${YELLOW}Step 2/4: Creating cluster directory...${NC}"
+    local cluster_dir=$(create_cluster_dir "$cluster_name")
+    echo -e "${GREEN}✓ Cluster directory created at: $cluster_dir${NC}"
+    echo ""
+
+    # Step 3: Provision VMs
+    echo -e "${YELLOW}Step 3/4: Provisioning VMs with lazylinux...${NC}"
+    "${LAZYKUBE_LIB_DIR}/scripts/provision-vms.sh" provision "$cluster_name"
+
+    # Step 4: Deploy K3s cluster
+    echo -e "${YELLOW}Step 4/4: Deploying K3s HA cluster...${NC}"
+
+    # Set cluster-specific paths
+    local inventory="${cluster_dir}/inventory/hosts.yml"
+    local group_vars="${cluster_dir}/group_vars/all.yml"
+
+    if [ ! -f "$inventory" ]; then
+        echo -e "${RED}Error: Inventory file not found at $inventory${NC}"
+        exit 1
+    fi
+
+    # Run Ansible playbook
+    echo -e "${BLUE}Installing K3s cluster (this may take several minutes)...${NC}"
+    cd "$LAZYKUBE_LIB_DIR"
+
+    if ANSIBLE_CONFIG="${LAZYKUBE_LIB_DIR}/ansible.cfg" \
+        ansible-playbook \
+            -i "$inventory" \
+            -e "@${group_vars}" \
+            -e "local_kubeconfig_path=${cluster_dir}/kubeconfig/config.yml" \
+            "${LAZYKUBE_LIB_DIR}/playbooks/install-cluster-local.yml"; then
+        echo -e "${GREEN}✓ K3s cluster installation completed${NC}"
+    else
+        echo -e "${RED}Error: K3s cluster installation failed${NC}"
+        echo -e "${YELLOW}Check the logs above for details${NC}"
+        exit 1
+    fi
+
+    # Verify kubeconfig was created
+    if [ ! -f "${cluster_dir}/kubeconfig/config.yml" ]; then
+        echo -e "${RED}Error: Kubeconfig file was not created${NC}"
+        echo -e "${YELLOW}The cluster may not be fully functional${NC}"
+        exit 1
+    fi
+
+    # Update cluster status
+    update_cluster_status "$cluster_name" "active"
+
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}✓ Cluster '$cluster_name' created successfully!${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+
+    # Show post-installation instructions
+    local domain=$(generate_domain "$cluster_name")
+    local kubeconfig_path="${cluster_dir}/kubeconfig/config.yml"
+
+    source "${cluster_dir}/cluster-config"
+
+    echo -e "${YELLOW}Next steps:${NC}"
+    echo ""
+    echo -e "1. ${GREEN}Configure kubectl:${NC}"
+    echo "   export KUBECONFIG=${kubeconfig_path}"
+    echo "   kubectl get nodes"
+    echo ""
+    echo -e "2. ${GREEN}Configure local DNS (/etc/hosts):${NC}"
+    echo "   sudo bash -c 'cat >> /etc/hosts << EOFHOSTS"
+    echo ""
+    echo "# K3s Cluster: ${cluster_name}"
+    echo "${HAPROXY_IP}  traefik.${domain}"
+    echo "${HAPROXY_IP}  dashboard.${domain}"
+    echo "${HAPROXY_IP}  demo.${domain}"
+    echo "EOFHOSTS'"
+    echo ""
+    echo -e "3. ${GREEN}Import CA certificate (to avoid SSL warnings):${NC}"
+    echo "   sudo security add-trusted-cert -d -r trustRoot \\"
+    echo "     -k /Library/Keychains/System.keychain \\"
+    echo "     ~/.kube/k3s-local-ca.crt"
+    echo ""
+    echo -e "   ${YELLOW}Note: Restart your browser after importing${NC}"
+    echo ""
+    echo -e "4. ${GREEN}Access Traefik dashboard:${NC}"
+    echo "   lazykube dashboard ${cluster_name}"
+    echo ""
+    echo -e "5. ${GREEN}Access Kubernetes Dashboard:${NC}"
+    echo "   open https://dashboard.${domain}"
+    echo "   Token: cat ${kubeconfig_path%/*}/dashboard-token.txt"
+    echo ""
+    echo -e "${YELLOW}Cluster Information:${NC}"
+    echo "  Name:       ${cluster_name}"
+    echo "  Domain:     ${domain}"
+    echo "  HAProxy IP: ${HAPROXY_IP}"
+    echo "  Kubeconfig: ${kubeconfig_path}"
+    echo ""
+}
+
+# List all clusters
+cmd_list() {
+    list_clusters
+}
+
+# Delete a cluster
+cmd_delete() {
+    local cluster_name=$1
+
+    if [ -z "$cluster_name" ]; then
+        echo -e "${RED}Error: Cluster name required${NC}"
+        echo "Usage: lazykube delete <cluster_name>"
+        exit 1
+    fi
+
+    # Check if cluster exists
+    if ! cluster_exists "$cluster_name"; then
+        echo -e "${RED}Error: Cluster '$cluster_name' not found${NC}"
+        echo "Use 'lazykube list' to see available clusters"
+        exit 1
+    fi
+
+    echo -e "${YELLOW}WARNING: This will delete cluster '$cluster_name' and all associated VMs${NC}"
+    read -p "Are you sure? [y/N] " -n 1 -r
+    echo
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Delete cancelled"
+        exit 0
+    fi
+
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}Deleting cluster: ${cluster_name}${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+
+    local cluster_dir="${CLUSTERS_DIR}/${cluster_name}"
+
+    # Step 1: Uninstall K3s from VMs
+    echo -e "${YELLOW}Step 1/3: Uninstalling K3s from VMs...${NC}"
+
+    local inventory="${cluster_dir}/inventory/hosts.yml"
+    if [ -f "$inventory" ]; then
+        cd "$LAZYKUBE_LIB_DIR"
+        ansible k3s_masters -i "$inventory" \
+            -m shell -a "sudo /usr/local/bin/k3s-uninstall.sh" -b 2>/dev/null || {
+            echo -e "${YELLOW}Note: K3s may not be installed or already uninstalled${NC}"
+        }
+        ansible haproxy -i "$inventory" \
+            -m shell -a "sudo systemctl stop haproxy && sudo apt remove -y haproxy" -b 2>/dev/null || {
+            echo -e "${YELLOW}Note: HAProxy may not be installed or already removed${NC}"
+        }
+    fi
+
+    # Step 2: Destroy VMs
+    echo -e "${YELLOW}Step 2/3: Destroying VMs...${NC}"
+    "${LAZYKUBE_LIB_DIR}/scripts/provision-vms.sh" destroy "$cluster_name"
+
+    # Step 3: Delete cluster metadata
+    echo -e "${YELLOW}Step 3/3: Deleting cluster metadata...${NC}"
+    delete_cluster_metadata "$cluster_name"
+
+    echo ""
+    echo -e "${GREEN}✓ Cluster '$cluster_name' deleted successfully${NC}"
+    echo ""
+}
+
+# Open dashboard for a cluster
+cmd_dashboard() {
+    local cluster_name=$1
+
+    if [ -z "$cluster_name" ]; then
+        echo -e "${RED}Error: Cluster name required${NC}"
+        echo "Usage: lazykube dashboard <cluster_name>"
+        exit 1
+    fi
+
+    # Check if cluster exists
+    if ! cluster_exists "$cluster_name"; then
+        echo -e "${RED}Error: Cluster '$cluster_name' not found${NC}"
+        echo "Use 'lazykube list' to see available clusters"
+        exit 1
+    fi
+
+    local cluster_dir="${CLUSTERS_DIR}/${cluster_name}"
+    local domain=$(generate_domain "$cluster_name")
+    local kubeconfig="${cluster_dir}/kubeconfig/config.yml"
+
+    echo -e "${BLUE}Opening dashboard for cluster: ${cluster_name}${NC}"
+    echo ""
+
+    # Check if kubeconfig exists
+    if [ ! -f "$kubeconfig" ]; then
+        echo -e "${RED}Error: Kubeconfig not found${NC}"
+        echo "Cluster may not be fully installed"
+        exit 1
+    fi
+
+    # Set KUBECONFIG
+    export KUBECONFIG="$kubeconfig"
+
+    # Check if cluster is accessible
+    if ! kubectl cluster-info >/dev/null 2>&1; then
+        echo -e "${RED}Error: Cannot connect to cluster${NC}"
+        echo "Make sure the cluster is running"
+        exit 1
+    fi
+
+    # Open Traefik dashboard
+    local dashboard_url="https://traefik.${domain}/dashboard/"
+
+    echo -e "${GREEN}Opening Traefik dashboard...${NC}"
+    echo "URL: $dashboard_url"
+    echo ""
+    echo -e "${YELLOW}Note: Make sure you have configured /etc/hosts for ${domain}${NC}"
+    echo ""
+
+    # Try to open in browser
+    if command -v open >/dev/null 2>&1; then
+        open "$dashboard_url" 2>/dev/null || {
+            echo -e "${YELLOW}Could not open browser automatically${NC}"
+            echo "Please open: $dashboard_url"
+        }
+    else
+        echo "Please open: $dashboard_url"
+    fi
+
+    # Also show HAProxy stats
+    source "${cluster_dir}/cluster-config"
+    echo ""
+    echo -e "${BLUE}Additional dashboards:${NC}"
+    echo "  HAProxy Stats: http://${HAPROXY_IP}:8404/stats"
+    echo ""
+}
+
+# Install lazykube to system
+do_install() {
+    if [ "$INSTALL_MODE" != "source" ]; then
+        echo -e "${RED}Error: This command must be run from the source directory${NC}"
+        exit 1
+    fi
+
+    local PREFIX="${1:-/usr/local}"
+
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}LazyKube Installation${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+    echo -e "${YELLOW}Installation target: ${PREFIX}${NC}"
+    echo ""
+
+    # Check if we need sudo
+    if [ ! -w "$PREFIX/bin" ] || [ ! -w "$PREFIX/lib" ] || [ ! -w "$PREFIX/share" ]; then
+        echo -e "${YELLOW}Root privileges required for installation${NC}"
+        SUDO="sudo"
+    else
+        SUDO=""
+    fi
+
+    # Create directories
+    echo -e "${BLUE}Creating directories...${NC}"
+    $SUDO mkdir -p "$PREFIX/bin"
+    $SUDO mkdir -p "$PREFIX/lib/lazykube"
+    $SUDO mkdir -p "$PREFIX/share/lazykube"
+    $SUDO mkdir -p "$PREFIX/share/man/man1"
+
+    # Copy files
+    echo -e "${BLUE}Installing lazykube binary...${NC}"
+    $SUDO cp -f "$SCRIPT_DIR/lazykube" "$PREFIX/bin/lazykube"
+    $SUDO chmod 755 "$PREFIX/bin/lazykube"
+
+    echo -e "${BLUE}Installing library files...${NC}"
+    $SUDO cp -rf "$SCRIPT_DIR/../lib/"* "$PREFIX/lib/lazykube/"
+    $SUDO chmod +rx "$PREFIX/lib/lazykube/scripts/"*.sh
+    # Ensure all files are readable
+    $SUDO find "$PREFIX/lib/lazykube" -type f -exec chmod 644 {} \;
+    $SUDO find "$PREFIX/lib/lazykube" -type d -exec chmod 755 {} \;
+    $SUDO chmod +x "$PREFIX/lib/lazykube/scripts/"*.sh
+
+    echo -e "${BLUE}Installing shared files...${NC}"
+    $SUDO cp -rf "$SCRIPT_DIR/../share/"* "$PREFIX/share/lazykube/"
+    # Ensure all shared files are readable
+    $SUDO find "$PREFIX/share/lazykube" -type f -exec chmod 644 {} \;
+    $SUDO find "$PREFIX/share/lazykube" -type d -exec chmod 755 {} \;
+
+    # Create user config directory
+    if [ ! -d "$LAZYKUBE_CONFIG_DIR" ]; then
+        echo -e "${BLUE}Creating user config directory...${NC}"
+        mkdir -p "$LAZYKUBE_CONFIG_DIR/clusters"
+    fi
+
+    echo ""
+    echo -e "${GREEN}✓ Installation completed!${NC}"
+    echo ""
+    echo -e "${YELLOW}Next steps:${NC}"
+    echo -e "  1. Run: ${GREEN}lazykube create my-cluster${NC}    # Create a new cluster"
+    echo -e "  2. Run: ${GREEN}lazykube list${NC}                  # List clusters"
+    echo ""
+}
+
+# Uninstall lazykube from system
+do_uninstall() {
+    local PREFIX="${1:-/usr/local}"
+
+    echo -e "${YELLOW}WARNING: Uninstalling LazyKube${NC}"
+    echo ""
+    echo -e "This will remove:"
+    echo "  - $PREFIX/bin/lazykube"
+    echo "  - $PREFIX/lib/lazykube/"
+    echo "  - $PREFIX/share/lazykube/"
+    echo ""
+    echo -e "Your clusters in ${GREEN}~/.lazykube/clusters/${NC} will be ${GREEN}preserved${NC}"
+    echo ""
+    read -p "Are you sure? [y/N] " -n 1 -r
+    echo
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Uninstall cancelled"
+        exit 0
+    fi
+
+    # Check if we need sudo
+    if [ ! -w "$PREFIX/bin" ] || [ ! -w "$PREFIX/lib" ] || [ ! -w "$PREFIX/share" ]; then
+        echo -e "${YELLOW}Root privileges required for uninstallation${NC}"
+        SUDO="sudo"
+    else
+        SUDO=""
+    fi
+
+    echo -e "${BLUE}Removing files...${NC}"
+    $SUDO rm -f "$PREFIX/bin/lazykube"
+    $SUDO rm -rf "$PREFIX/lib/lazykube"
+    $SUDO rm -rf "$PREFIX/share/lazykube"
+
+    echo ""
+    echo -e "${GREEN}✓ Uninstall completed!${NC}"
+    echo ""
+    echo -e "${YELLOW}To remove your clusters:${NC}"
+    echo "  rm -rf ~/.lazykube/clusters"
+    echo ""
+}
+
+# Show version
+show_version() {
+    echo "LazyKube version $LAZYKUBE_VERSION"
+    echo "Install mode: $INSTALL_MODE"
+    echo "Library dir: $LAZYKUBE_LIB_DIR"
+    echo "Share dir: $LAZYKUBE_SHARE_DIR"
+    echo "Config dir: $LAZYKUBE_CONFIG_DIR"
+}
+
+# ============================================
+# Main Execution
+# ============================================
+
+# Show help if no arguments provided
+if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+fi
+
+# Get the command
+COMMAND=$1
+shift
+
+# Execute the command
+case "$COMMAND" in
+    create)
+        cmd_create "$@"
+        ;;
+    list)
+        cmd_list "$@"
+        ;;
+    delete)
+        cmd_delete "$@"
+        ;;
+    dashboard)
+        cmd_dashboard "$@"
+        ;;
+    install)
+        do_install "$@"
+        ;;
+    uninstall)
+        do_uninstall "$@"
+        ;;
+    version|--version|-v)
+        show_version
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        echo -e "${RED}Error: Unknown command '$COMMAND'${NC}"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac

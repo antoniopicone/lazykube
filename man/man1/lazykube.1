@@ -1,0 +1,406 @@
+.TH LAZYKUBE 1 "December 2025" "LazyKube 2.0" "LazyKube Manual"
+.SH NAME
+lazykube \- K3s HA Cluster Management Tool with Automated VM Provisioning
+.SH SYNOPSIS
+.B lazykube
+.I command
+[\fIoptions\fR]
+.SH DESCRIPTION
+.B lazykube
+is a command-line tool for automating the deployment and management of K3s High Availability clusters with integrated VM provisioning via lazylinux. It simplifies the creation of production-ready K3s clusters with 3 master nodes, HAProxy load balancing, MetalLB, Traefik, and cert-manager.
+
+LazyKube v2.0 provides a streamlined workflow for multi-cluster management, automatically handling VM creation, cluster deployment, and configuration.
+.SH COMMANDS
+.SS Cluster Management
+.TP
+.B create \fIcluster_name\fR
+Create a new K3s HA cluster with automated VM provisioning. This command:
+.RS
+.IP \(bu 2
+Checks and installs dependencies (ansible, kubectl, lazylinux)
+.IP \(bu 2
+Creates 4 VMs via lazylinux (3 masters + 1 HAProxy)
+.IP \(bu 2
+Generates cluster configuration files
+.IP \(bu 2
+Deploys K3s in HA mode with embedded etcd
+.IP \(bu 2
+Installs MetalLB, Traefik, and cert-manager
+.IP \(bu 2
+Configures HAProxy for load balancing
+.IP \(bu 2
+Saves cluster state to ~/.lazykube/clusters/<cluster_name>/
+.RE
+
+.B Example:
+.RS
+lazykube create my-cluster
+.RE
+
+.TP
+.B list
+Display all available clusters with their status, domain, and creation timestamp. Shows clusters stored in ~/.lazykube/clusters/.
+
+.B Example output:
+.RS
+.nf
+Available LazyKube Clusters
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NAME            STATUS    DOMAIN                  CREATED
+dev-cluster     active    dev-cluster.local       2025-12-28 10:30:15
+prod-cluster    active    prod-cluster.local      2025-12-27 14:22:43
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+.fi
+.RE
+
+.TP
+.B delete \fIcluster_name\fR
+Stop VMs and delete cluster. This command:
+.RS
+.IP \(bu 2
+Uninstalls K3s from all master nodes
+.IP \(bu 2
+Removes HAProxy configuration
+.IP \(bu 2
+Deletes all VMs via lazylinux
+.IP \(bu 2
+Removes cluster metadata from ~/.lazykube/clusters/
+.RE
+
+.B WARNING:
+This is a destructive operation and will prompt for confirmation.
+
+.B Example:
+.RS
+lazykube delete my-cluster
+.RE
+
+.TP
+.B dashboard \fIcluster_name\fR
+Open the Kubernetes dashboard for the specified cluster. Automatically:
+.RS
+.IP \(bu 2
+Exposes the Kubernetes dashboard service
+.IP \(bu 2
+Creates admin service account and token
+.IP \(bu 2
+Opens the dashboard in your default browser
+.IP \(bu 2
+Displays the access token
+.RE
+
+.B Example:
+.RS
+lazykube dashboard my-cluster
+.RE
+
+.SS Installation Management
+.TP
+.B install
+Install lazykube to system directories. Copies files to:
+.RS
+.IP \(bu 2
+/usr/local/bin/lazykube (CLI binary)
+.IP \(bu 2
+/usr/local/lib/lazykube/ (playbooks, roles, scripts)
+.IP \(bu 2
+/usr/local/share/lazykube/ (templates, examples)
+.IP \(bu 2
+/usr/local/share/man/man*/ (manual pages)
+.RE
+
+Requires sudo privileges for system-wide installation. After installation, lazykube can be run from any directory.
+
+.B Example:
+.RS
+cd /path/to/lazykube/repo
+.br
+./bin/lazykube install
+.RE
+
+.TP
+.B uninstall
+Remove lazykube from system directories. Removes:
+.RS
+.IP \(bu 2
+/usr/local/bin/lazykube
+.IP \(bu 2
+/usr/local/lib/lazykube/
+.IP \(bu 2
+/usr/local/share/lazykube/
+.IP \(bu 2
+Manual pages
+.RE
+
+User configuration in ~/.lazykube/ is preserved. Requires sudo privileges.
+
+.B Example:
+.RS
+lazykube uninstall
+.RE
+
+.SS Information
+.TP
+.B version
+Display version information including:
+.RS
+.IP \(bu 2
+LazyKube version
+.IP \(bu 2
+Installation paths
+.IP \(bu 2
+Dependency status
+.RE
+
+.B Example:
+.RS
+lazykube version
+.RE
+
+.TP
+.B help
+Display help message with all available commands and usage examples.
+
+.B Example:
+.RS
+lazykube help
+.RE
+
+.SH FILES
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/
+Base directory for each cluster's configuration and metadata.
+
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/cluster.json
+Cluster metadata including name, domain, VMs, status, and timestamps.
+
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/cluster-config
+Shell-sourceable configuration file with VM IPs and SSH credentials.
+
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/inventory/hosts.yml
+Generated Ansible inventory file for the cluster.
+
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/group_vars/all.yml
+Ansible variables for cluster configuration.
+
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/kubeconfig/config.yml
+Generated kubeconfig file for kubectl access.
+
+.TP
+.B ~/.lazykube/clusters/<cluster_name>/vms/vm_info.txt
+VM information retrieved from lazylinux.
+
+.TP
+.B ~/.lazykube/lazylinux/
+Local installation of lazylinux VM management tool.
+
+.TP
+.B ~/.kube/k3s-local-ca.crt
+Self-signed CA certificate for cluster TLS.
+
+.TP
+.B /usr/local/bin/lazykube
+Main lazykube CLI executable.
+
+.TP
+.B /usr/local/lib/lazykube/
+Library directory containing Ansible playbooks, roles, and scripts.
+
+.TP
+.B /usr/local/share/lazykube/
+Read-only application data including templates and examples.
+
+.SH ENVIRONMENT
+.TP
+.B LAZYKUBE_LIB_DIR
+Override the default library directory (/usr/local/lib/lazykube). Useful for development.
+
+.TP
+.B LAZYKUBE_SHARE_DIR
+Override the default share directory (/usr/local/share/lazykube).
+
+.TP
+.B LAZYKUBE_CONFIG_DIR
+Override the default user configuration directory (default: ~/.lazykube).
+
+.TP
+.B KUBECONFIG
+Set this to point to a cluster's kubeconfig file for kubectl commands:
+.RS
+export KUBECONFIG=~/.lazykube/clusters/my-cluster/kubeconfig/config.yml
+.RE
+
+.SH EXAMPLES
+.SS Creating Your First Cluster
+.nf
+# Create a cluster named 'dev'
+lazykube create dev
+
+# Wait for installation to complete (5-10 minutes)
+# Then configure kubectl
+export KUBECONFIG=~/.lazykube/clusters/dev/kubeconfig/config.yml
+kubectl get nodes
+
+# Configure local DNS (add to /etc/hosts)
+sudo bash -c 'cat >> /etc/hosts << EOF
+
+# K3s Cluster: dev
+192.168.105.50  traefik.dev.local
+192.168.105.50  demo.dev.local
+EOF'
+
+# Verify the cluster
+kubectl get pods -A
+.fi
+
+.SS Managing Multiple Clusters
+.nf
+# Create production cluster
+lazykube create prod
+
+# Create staging cluster
+lazykube create staging
+
+# List all clusters
+lazykube list
+
+# Switch between clusters
+export KUBECONFIG=~/.lazykube/clusters/prod/kubeconfig/config.yml
+kubectl get nodes
+
+export KUBECONFIG=~/.lazykube/clusters/staging/kubeconfig/config.yml
+kubectl get nodes
+.fi
+
+.SS Accessing Cluster Resources
+.nf
+# Open Kubernetes dashboard
+lazykube dashboard prod
+
+# Access HAProxy stats
+source ~/.lazykube/clusters/prod/cluster-config
+open http://${HAPROXY_IP}:8404/stats
+
+# Access Traefik dashboard
+open https://traefik.prod.local/dashboard/
+.fi
+
+.SS Cleanup
+.nf
+# Delete a cluster
+lazykube delete staging
+
+# Confirm deletion when prompted
+.fi
+
+.SH ARCHITECTURE
+Each LazyKube cluster consists of:
+.IP \(bu 2
+3 Master Nodes: K3s control-plane with embedded etcd for HA
+.IP \(bu 2
+1 HAProxy Node: Load balancer for API (6443) and ingress traffic (80/443)
+.IP \(bu 2
+MetalLB: L2 load balancer for LoadBalancer services
+.IP \(bu 2
+Traefik: Ingress controller with automatic TLS
+.IP \(bu 2
+cert-manager: Automatic certificate management
+
+.SH DEPENDENCIES
+LazyKube automatically checks and installs dependencies via Homebrew (macOS):
+.IP \(bu 2
+ansible: Configuration management and deployment
+.IP \(bu 2
+kubectl: Kubernetes command-line tool
+.IP \(bu 2
+lazylinux: VM management and provisioning
+
+.SH NETWORKING
+.SS Default Configuration
+.IP \(bu 2
+VM IPs: Assigned by lazylinux (typically 192.168.105.x range)
+.IP \(bu 2
+Kubernetes API: Port 6443 (via HAProxy)
+.IP \(bu 2
+HTTP Ingress: Port 80 (via HAProxy → Traefik)
+.IP \(bu 2
+HTTPS Ingress: Port 443 (via HAProxy → Traefik)
+.IP \(bu 2
+HAProxy Stats: Port 8404
+.IP \(bu 2
+etcd: Ports 2379/2380 (internal)
+
+.SH EXIT STATUS
+.B lazykube
+returns 0 on success, non-zero on error.
+
+.SH TROUBLESHOOTING
+.SS Check Cluster Status
+.nf
+export KUBECONFIG=~/.lazykube/clusters/my-cluster/kubeconfig/config.yml
+kubectl get nodes
+kubectl get pods -A
+.fi
+
+.SS Verify VM Connectivity
+.nf
+ansible all \\
+  -i ~/.lazykube/clusters/my-cluster/inventory/hosts.yml \\
+  -m ping
+.fi
+
+.SS View Cluster Logs
+.nf
+# Check VM status
+~/.lazykube/lazylinux/bin/lazylinux list
+
+# View Kubernetes component logs
+kubectl logs -n metallb-system -l component=controller
+kubectl logs -n traefik -l app.kubernetes.io/name=traefik
+kubectl logs -n cert-manager -l app=cert-manager
+.fi
+
+.SS Manual Ansible Execution
+.nf
+cd /usr/local/lib/lazykube
+ansible-playbook \\
+  -i ~/.lazykube/clusters/my-cluster/inventory/hosts.yml \\
+  playbooks/install-cluster-local.yml -v
+.fi
+
+.SH SEE ALSO
+.BR lazykube-architecture (7),
+.BR lazykube-troubleshooting (7),
+.BR lazykube-configuration (7),
+.BR kubectl (1),
+.BR ansible (1),
+.BR k3s (1)
+
+.SH BUGS
+Report bugs at: https://github.com/antoniopicone/lazykube/issues
+
+.SH AUTHOR
+Written by Antonio Picone.
+
+.SH COPYRIGHT
+Copyright \(co 2025. License: MIT.
+
+.SH NOTES
+LazyKube v2.0 represents a complete rewrite with focus on:
+.IP \(bu 2
+Simplified command structure
+.IP \(bu 2
+Automated VM provisioning via lazylinux
+.IP \(bu 2
+Multi-cluster support
+.IP \(bu 2
+Improved state management
+.IP \(bu 2
+Better dependency handling
+
+For legacy v1.0 make-based commands, see the Makefile in /usr/local/lib/lazykube/Makefile.

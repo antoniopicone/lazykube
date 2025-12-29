@@ -118,6 +118,16 @@
   roles:
     - role: traefik-local
 
+- name: Install Kubernetes Dashboard
+  hosts: k3s_masters[0]
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  environment:
+    KUBECONFIG: "{{ k3s_config_dir }}/k3s.yaml"
+  roles:
+    - role: kubernetes-dashboard
+
 - name: Setup local DNS resolution
   hosts: localhost
   gather_facts: false
@@ -153,6 +163,7 @@
 
           # K3s Local Cluster (via HAProxy)
           {{ haproxy_ip }}  traefik.{{ domain }}
+          {{ haproxy_ip }}  dashboard.{{ domain }}
           {{ haproxy_ip }}  myapp.{{ domain }}
           {{ haproxy_ip }}  demo.{{ domain }}
           EOF'
@@ -254,6 +265,7 @@
 
           3. Configure local DNS (/etc/hosts) to use HAProxy:
              sudo bash -c 'echo "{{ haproxy_ip }}  traefik.{{ domain }}" >> /etc/hosts'
+             sudo bash -c 'echo "{{ haproxy_ip }}  dashboard.{{ domain }}" >> /etc/hosts'
 
           4. Import CA certificate into system (to avoid SSL warnings):
              sudo security add-trusted-cert -d -r trustRoot \
@@ -265,9 +277,12 @@
 
           6. Access Traefik dashboard (via HAProxy):
              open https://traefik.{{ domain }}/dashboard/
-             (accept certificate exception or import the CA)
 
-          7. Test demo application deployment:
+          7. Access Kubernetes Dashboard:
+             open https://dashboard.{{ domain }}
+             (use token from {{ local_kubeconfig_path | dirname }}/dashboard-token.txt)
+
+          8. Test demo application deployment:
              kubectl create namespace demo
              kubectl apply -f ../examples/nginx-demo-local.yaml
 

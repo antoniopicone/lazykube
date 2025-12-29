@@ -1,0 +1,214 @@
+.TH LAZYKUBE-ARCHITECTURE 7 "December 2025" "LazyKube 1.0" "LazyKube Manual"
+.SH NAME
+lazykube-architecture \- LazyKube cluster architecture and components
+.SH DESCRIPTION
+This manual page describes the architecture of a K3s High Availability cluster deployed by
+.BR lazykube (1).
+.SH CLUSTER TOPOLOGY
+A lazykube cluster consists of 4 VMs:
+.TP
+.B 3 Master Nodes
+Each master node runs:
+.RS
+.IP \(bu 2
+K3s control plane (API server, controller manager, scheduler)
+.IP \(bu 2
+Embedded etcd database (3-node quorum)
+.IP \(bu 2
+K3s agent (kubelet)
+.RE
+.TP
+.B 1 HAProxy Load Balancer
+Dedicated load balancer VM that handles:
+.RS
+.IP \(bu 2
+Kubernetes API (port 6443) - Load balanced across 3 masters
+.IP \(bu 2
+HTTP traffic (port 80) - Forwarded to Traefik
+.IP \(bu 2
+HTTPS traffic (port 443) - TLS passthrough to Traefik
+.IP \(bu 2
+etcd client/peer ports (2379/2380) - For etcd cluster communication
+.IP \(bu 2
+Statistics dashboard (port 8404)
+.RE
+.SH COMPONENTS
+.SS K3s
+Lightweight Kubernetes distribution with:
+.IP \(bu 2
+Embedded etcd (no external database needed)
+.IP \(bu 2
+Integrated control plane components
+.IP \(bu 2
+Small footprint and easy installation
+.SS HAProxy
+Layer 4 TCP load balancer providing:
+.IP \(bu 2
+High availability for API server
+.IP \(bu 2
+Health checks for backend masters
+.IP \(bu 2
+TCP passthrough for TLS traffic
+.IP \(bu 2
+Statistics dashboard for monitoring
+.SS MetalLB
+Layer 2 LoadBalancer implementation for bare metal:
+.IP \(bu 2
+Provides LoadBalancer service type support
+.IP \(bu 2
+IP address pool management
+.IP \(bu 2
+ARP-based IP address announcement
+.IP \(bu 2
+Default version: v0.15.2
+.PP
+Configuration:
+.RS
+.IP \(bu 2
+IP range allocated from local network
+.IP \(bu 2
+L2Advertisement mode for simplicity
+.RE
+.SS Traefik
+Modern reverse proxy and ingress controller:
+.IP \(bu 2
+Automatic TLS certificate management
+.IP \(bu 2
+HTTP to HTTPS redirection
+.IP \(bu 2
+Dynamic configuration via Kubernetes CRDs
+.IP \(bu 2
+Built-in dashboard for monitoring
+.PP
+Exposed via:
+.RS
+.IP \(bu 2
+LoadBalancer service (MetalLB IP)
+.IP \(bu 2
+HAProxy forwarding (ports 80/443)
+.RE
+.SS cert-manager
+X.509 certificate management:
+.IP \(bu 2
+Self-signed certificate authority
+.IP \(bu 2
+Automatic certificate generation
+.IP \(bu 2
+Certificate renewal automation
+.IP \(bu 2
+ClusterIssuer for cluster-wide certs
+.PP
+Configuration:
+.RS
+.IP \(bu 2
+Self-signed CA for local domains
+.IP \(bu 2
+Not using Let's Encrypt (local domains not publicly accessible)
+.IP \(bu 2
+CA certificate can be trusted system-wide
+.RE
+.SH NETWORK ARCHITECTURE
+.SS Control Plane Access
+.nf
+kubectl → HAProxy:6443 → Master1:6443
+                        → Master2:6443
+                        → Master3:6443
+.fi
+.SS HTTP/HTTPS Traffic Flow
+.nf
+Browser → HAProxy:80/443 → Traefik → Ingress → Service → Pod
+.fi
+.SS Internal Service Communication
+.nf
+Pod → ClusterIP Service → Pod(s)
+Pod → LoadBalancer Service (MetalLB) → Pod(s)
+.fi
+.SH STORAGE
+.TP
+.B etcd
+.IP \(bu 2
+Embedded in K3s masters
+.IP \(bu 2
+3-node cluster for high availability
+.IP \(bu 2
+Data stored in /var/lib/rancher/k3s/server/db/etcd
+.TP
+.B Local Path Provisioner
+.IP \(bu 2
+Default storage class in K3s
+.IP \(bu 2
+PersistentVolumes on local node storage
+.IP \(bu 2
+Suitable for development and testing
+.SH DNS
+.SS Cluster DNS (CoreDNS)
+.IP \(bu 2
+Resolves service.<namespace>.svc.cluster.local
+.IP \(bu 2
+Integrated with K3s
+.SS External DNS
+.IP \(bu 2
+Custom domain resolution via /etc/hosts
+.IP \(bu 2
+Maps domain names to HAProxy IP
+.IP \(bu 2
+Example: traefik.k3cluster.local → HAProxy IP
+.SH TLS/CERTIFICATES
+.SS Certificate Hierarchy
+.nf
+Self-signed CA (cert-manager)
+  ├─ K3s API Server Certificate
+  ├─ Traefik Default Certificate
+  └─ Ingress Certificates (per domain)
+.fi
+.SS Trust Chain
+.IP \(bu 2
+CA certificate stored in ~/.kube/k3s-local-ca.crt
+.IP \(bu 2
+Can be imported to system keychain
+.IP \(bu 2
+Command:
+.B lazykube trust-ca
+.IP \(bu 2
+Eliminates browser SSL warnings
+.SH HIGH AVAILABILITY
+.SS Control Plane HA
+.IP \(bu 2
+3 masters ensure quorum (2 can fail, 1 remains)
+.IP \(bu 2
+HAProxy distributes load across all healthy masters
+.IP \(bu 2
+Automatic failover if a master becomes unavailable
+.SS Single Points of Failure
+.IP \(bu 2
+HAProxy is a single point of failure
+.IP \(bu 2
+For production, consider HAProxy clustering (keepalived + VRRP)
+.IP \(bu 2
+MetalLB speaker pods run on all nodes
+.SH PORTS
+.SS HAProxy
+.TS
+tab(;);
+l l l.
+Port;Protocol;Purpose
+6443;TCP;Kubernetes API
+80;TCP;HTTP
+443;TCP;HTTPS
+2379;TCP;etcd client
+2380;TCP;etcd peer
+8404;HTTP;HAProxy stats
+.TE
+.SS K3s Masters
+.TS
+tab(;);
+l l l.
+Port;Protocol;Purpose
+6443;TCP;Kubernetes API
+2379-2380;TCP;etcd
+10250;TCP;kubelet API
+.TE
+.SH SEE ALSO
+.BR lazykube (1),
+.BR lazykube-troubleshooting (7),
+.BR lazykube-configuration (7)

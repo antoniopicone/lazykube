@@ -1,0 +1,371 @@
+.TH LAZYKUBE-TROUBLESHOOTING 7 "December 2025" "LazyKube 1.0" "LazyKube Manual"
+.SH NAME
+lazykube-troubleshooting \- Common issues and solutions for LazyKube
+.SH DESCRIPTION
+This manual page provides solutions to common problems encountered when using
+.BR lazykube (1).
+.SH COMMON ISSUES
+.SS Cluster Not Configured
+.B Error:
+.nf
+Error: Cluster not configured!
+Run first: lazykube configure
+.fi
+.PP
+.B Solution:
+.nf
+lazykube configure
+.fi
+.PP
+This error occurs when trying to run cluster operations before configuring VM IPs and credentials.
+.SS VMs Unreachable
+.B Error:
+.nf
+✗ Some VMs are unreachable
+.fi
+.PP
+.B Diagnosis:
+Test SSH connectivity manually:
+.nf
+ssh -i ~/.ssh/id_rsa username@vm_ip
+.fi
+.PP
+.B Common Causes:
+.IP \(bu 2
+Incorrect IP addresses in configuration
+.IP \(bu 2
+SSH service not running on VMs
+.IP \(bu 2
+Firewall blocking SSH (port 22)
+.IP \(bu 2
+Wrong SSH credentials or key path
+.IP \(bu 2
+Network connectivity issues
+.PP
+.B Solutions:
+.IP 1. 3
+Verify VM IPs are correct:
+.B lazykube config
+.IP 2. 3
+Check SSH service on VMs:
+.B systemctl status ssh
+.IP 3. 3
+Test network connectivity:
+.B ping <vm_ip>
+.IP 4. 3
+Reconfigure with correct credentials:
+.B lazykube clean-config && lazykube configure
+.SS Ansible Not Installed
+.B Error:
+.nf
+OMG you don't have Ansible installed, can I install it with Homebrew?
+.fi
+.PP
+.B Solution:
+Accept the automatic installation prompt, or install manually:
+.nf
+# macOS
+brew install ansible
+
+# Linux
+apt-get install ansible  # Debian/Ubuntu
+dnf install ansible      # Fedora/RHEL
+.fi
+.SS TLS Certificate Warnings
+.B Error:
+.nf
+certificate is valid for 192.168.x.x, not <HAProxy_IP>
+.fi
+.PP
+.B Explanation:
+The K3s API certificate doesn't include the HAProxy IP in its Subject Alternative Names (SAN).
+.PP
+.B Solution 1 (Quick):
+The generated kubeconfig already uses
+.B insecure-skip-tls-verify: true
+\- no action needed.
+.PP
+.B Solution 2 (Proper):
+Regenerate certificates with HAProxy IP:
+.nf
+ansible-playbook -i ~/.lazykube/inventory/hosts.yml \\
+    /usr/local/lib/lazykube/playbooks/regenerate-k3s-certs.yml
+.fi
+.PP
+.B Browser SSL Warnings:
+Import the CA certificate to avoid warnings:
+.nf
+lazykube trust-ca
+.fi
+Then restart your browser.
+.SS HAProxy Backend Down
+.B Symptoms:
+.IP \(bu 2
+kubectl commands timeout
+.IP \(bu 2
+HAProxy stats show backends as "DOWN"
+.IP \(bu 2
+Cluster unreachable
+.PP
+.B Diagnosis:
+Check HAProxy stats:
+.nf
+lazykube haproxy-stats
+# or visit: http://<HAPROXY_IP>:8404/stats
+.fi
+.PP
+Verify master node connectivity:
+.nf
+nc -zv <MASTER_IP> 6443
+.fi
+.PP
+.B Common Causes:
+.IP \(bu 2
+K3s service not running on masters
+.IP \(bu 2
+Firewall blocking port 6443
+.IP \(bu 2
+Master node powered off or unreachable
+.IP \(bu 2
+etcd cluster unhealthy
+.PP
+.B Solutions:
+.IP 1. 3
+Check K3s service status on masters:
+.nf
+ansible k3s_masters -i ~/.lazykube/inventory/hosts.yml \\
+    -m shell -a "systemctl status k3s"
+.fi
+.IP 2. 3
+Restart K3s on problematic master:
+.nf
+ssh user@master_ip
+sudo systemctl restart k3s
+.fi
+.IP 3. 3
+Check etcd cluster health:
+.nf
+kubectl get nodes
+kubectl get cs  # component status
+.fi
+.SS Kubeconfig Issues
+.B Error:
+.nf
+The connection to the server <ip>:6443 was refused
+.fi
+.PP
+.B Diagnosis:
+.IP 1. 3
+Verify kubeconfig file exists:
+.nf
+ls -la ~/.kube/<domain>-config.yml
+.fi
+.IP 2. 3
+Check KUBECONFIG environment variable:
+.nf
+echo $KUBECONFIG
+.fi
+.IP 3. 3
+Verify current context:
+.nf
+kubectl config current-context
+.fi
+.PP
+.B Solution:
+.IP 1. 3
+Get kubeconfig information:
+.nf
+lazykube kubeconfig
+.fi
+.IP 2. 3
+Fix kubeconfig context names:
+.nf
+lazykube fix-kubeconfig
+.fi
+.IP 3. 3
+Merge with existing config:
+.nf
+KUBECONFIG=~/.kube/config:~/.kube/<domain>-config.yml \\
+    kubectl config view --flatten > ~/.kube/config-merged
+mv ~/.kube/config-merged ~/.kube/config
+kubectl config use-context <domain>
+.fi
+.SS Installation Fails
+.B Error:
+.nf
+✗ Installation failed!
+Run './lazykube install-verbose' to see details
+.fi
+.PP
+.B Solution:
+Run verbose installation to see error details:
+.nf
+lazykube install-verbose
+.fi
+.PP
+.B Common Causes:
+.IP \(bu 2
+Insufficient resources on VMs (RAM, disk)
+.IP \(bu 2
+Port conflicts with existing services
+.IP \(bu 2
+Python dependencies missing on VMs
+.IP \(bu 2
+Network issues during download
+.IP \(bu 2
+Ansible collection not installed
+.PP
+.B Solutions:
+.IP 1. 3
+Install Ansible dependencies:
+.nf
+lazykube setup
+.fi
+.IP 2. 3
+Check VM resources:
+.nf
+ansible all -i ~/.lazykube/inventory/hosts.yml \\
+    -m shell -a "free -h && df -h"
+.fi
+.IP 3. 3
+Check for port conflicts:
+.nf
+ansible all -i ~/.lazykube/inventory/hosts.yml \\
+    -m shell -a "ss -tlnp | grep -E ':(6443|2379|2380|80|443)'"
+.fi
+.SS Pods Not Starting
+.B Symptoms:
+.IP \(bu 2
+Pods stuck in Pending, CrashLoopBackOff, or ImagePullBackOff
+.IP \(bu 2
+Services not accessible
+.PP
+.B Diagnosis:
+.nf
+kubectl get pods -A
+kubectl describe pod <pod-name> -n <namespace>
+kubectl logs <pod-name> -n <namespace>
+.fi
+.PP
+.B Common Causes and Solutions:
+.TP
+.B Pending Pods
+.IP \(bu 2
+Insufficient resources: Check node resources
+.IP \(bu 2
+No nodes available: Verify nodes are Ready
+.IP \(bu 2
+PersistentVolume issues: Check storage provisioner
+.TP
+.B CrashLoopBackOff
+.IP \(bu 2
+Application error: Check pod logs
+.IP \(bu 2
+Configuration error: Verify ConfigMaps/Secrets
+.IP \(bu 2
+Resource limits: Check resource requests/limits
+.TP
+.B ImagePullBackOff
+.IP \(bu 2
+Image doesn't exist: Verify image name/tag
+.IP \(bu 2
+Registry authentication: Check imagePullSecrets
+.IP \(bu 2
+Network issues: Test internet connectivity from nodes
+.SS MetalLB IP Address Not Assigned
+.B Symptoms:
+.IP \(bu 2
+LoadBalancer service shows <pending> external IP
+.IP \(bu 2
+Services not accessible via LoadBalancer IP
+.PP
+.B Diagnosis:
+.nf
+kubectl get svc -A | grep LoadBalancer
+kubectl get ipaddresspool -n metallb-system
+kubectl logs -n metallb-system -l component=controller
+.fi
+.PP
+.B Solutions:
+.IP 1. 3
+Verify MetalLB is running:
+.nf
+kubectl get pods -n metallb-system
+.fi
+.IP 2. 3
+Check IP pool configuration:
+.nf
+kubectl get ipaddresspool -n metallb-system -o yaml
+.fi
+.IP 3. 3
+Verify IP range doesn't conflict with DHCP:
+Review group_vars/all.yml metallb_ip_range setting
+.IP 4. 3
+Check MetalLB logs for errors:
+.nf
+lazykube logs
+.fi
+.SS DNS Resolution Issues
+.B Symptoms:
+.IP \(bu 2
+Cannot access services via domain names
+.IP \(bu 2
+Browser cannot resolve *.k3cluster.local
+.PP
+.B Solution:
+Add DNS entries to /etc/hosts:
+.nf
+sudo bash -c 'cat >> /etc/hosts << EOF
+
+# K3s Local Cluster
+<HAPROXY_IP>  traefik.k3cluster.local
+<HAPROXY_IP>  demo.k3cluster.local
+EOF'
+.fi
+.PP
+Get correct IPs and commands:
+.nf
+lazykube dns-help
+.fi
+.SH DIAGNOSTIC COMMANDS
+.SS Cluster Health
+.nf
+# Overall cluster status
+lazykube verify
+
+# Node status
+kubectl get nodes -o wide
+
+# System pods
+kubectl get pods -A
+
+# Component logs
+lazykube logs
+.fi
+.SS Network Diagnostics
+.nf
+# Test VM connectivity
+lazykube ping
+
+# Test service endpoints
+kubectl get endpoints -A
+
+# Check LoadBalancer IPs
+kubectl get svc -A -o wide
+.fi
+.SS HAProxy Diagnostics
+.nf
+# HAProxy stats dashboard
+lazykube haproxy-stats
+
+# HAProxy configuration
+ssh user@haproxy_ip "sudo cat /etc/haproxy/haproxy.cfg"
+
+# HAProxy logs
+ssh user@haproxy_ip "sudo journalctl -u haproxy -n 50"
+.fi
+.SH SEE ALSO
+.BR lazykube (1),
+.BR lazykube-architecture (7),
+.BR lazykube-configuration (7),
+.BR kubectl (1)

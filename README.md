@@ -1,349 +1,310 @@
-# K3s HA Cluster - Ansible Local Setup
+# LazyKube v2.0.0
 
-Automated installation of a K3s HA cluster on 3 VMs + 1 HAProxy load balancer with interactive configuration.
+A powerful command-line tool for managing K3s High Availability (HA) clusters with automated VM provisioning using lazylinux.
 
-## 🎯 Architecture
+## Features
 
-- **3 Master nodes**: K3s control-plane + embedded etcd
-- **1 HAProxy**: Dedicated load balancer for API (6443), HTTP (80), HTTPS (443), etcd (2379/2380)
-- **MetalLB**: Layer 2 LoadBalancer for internal services
-- **Traefik**: Ingress controller with automatic TLS
-- **cert-manager**: Self-signed certificate management
+- **Automated VM Provisioning**: Creates and manages VMs using lazylinux
+- **K3s HA Cluster Deployment**: Deploys a production-ready K3s cluster with 3 master nodes
+- **Load Balancing**: Automatic HAProxy configuration for HA
+- **Multi-Cluster Management**: Create and manage multiple clusters
+- **Simple CLI**: Easy-to-use command-line interface
+- **Dependency Management**: Automatic installation of required tools
 
-## 📋 Prerequisites
+## Architecture
 
-- 4 VMs with Debian/Ubuntu
-- SSH enabled on all VMs
-- Python 3 installed on the VMs
-- `ansible`, `kubectl` installed on local Mac
+Each LazyKube cluster consists of:
+- **3 Master Nodes**: K3s control-plane with embedded etcd
+- **1 HAProxy Node**: Load balancer for API and ingress traffic
+- **MetalLB**: L2 load balancer for services
+- **Traefik**: Ingress controller with SSL/TLS support
+- **cert-manager**: Automatic certificate management
 
-## 🚀 Quick Start
+## Installation
 
-### Option 1: Using the `lazykube` command (Recommended)
+### From Source
 
 ```bash
-# The script is already executable, just run:
-./lazykube configure
-./lazykube install
-./lazykube verify
+git clone https://github.com/antoniopicone/lazykube.git
+cd lazykube
+./bin/lazykube install
 ```
 
-**Optional: Install globally**
+### System Requirements
 
-To use `lazykube` from anywhere without `./`:
+- macOS (Darwin)
+- Homebrew (for dependency installation)
+- SSH access to VMs (or lazylinux for VM creation)
+
+## Quick Start
+
+### 1. Create a Cluster
 
 ```bash
-# Option A: Add to your PATH (add to ~/.bashrc or ~/.zshrc)
-export PATH="$PATH:/path/to/lazykube/directory"
-
-# Option B: Create a symbolic link
-sudo ln -s $(pwd)/lazykube /usr/local/bin/lazykube
-
-# Now you can use it globally:
-lazykube configure
-lazykube install
+lazykube create my-cluster
 ```
 
-### Option 2: Using `make` commands
+This command will:
+1. Check and install dependencies (ansible, kubectl, lazylinux)
+2. Create 4 VMs using lazylinux
+3. Configure HAProxy load balancer
+4. Deploy K3s HA cluster
+5. Install MetalLB, Traefik, and cert-manager
+
+### 2. List Clusters
 
 ```bash
-cd ansible-local
-make configure
+lazykube list
 ```
 
-### 1. Configure the cluster (interactive)
+### 3. Access Dashboard
 
 ```bash
-./lazykube configure
-# or
-make configure
+lazykube dashboard my-cluster
 ```
 
-The script interactively asks for:
-- IP of each VM (3 masters + 1 HAProxy)
-- SSH username for each VM
-- SSH password **or** path to SSH private key
-- Cluster domain (default: `k3cluster.local`)
-- Timezone (default: `Europe/Rome`)
-
-### 2. Verify connectivity
+### 4. Delete a Cluster
 
 ```bash
-./lazykube check
-# or
-make check
+lazykube delete my-cluster
 ```
 
-### 3. Install the cluster (~15-20 minutes)
+## Command Reference
 
+### Core Commands
+
+#### `lazykube create <cluster_name>`
+Create a new K3s HA cluster with VMs.
+
+**Example:**
 ```bash
-./lazykube install
-# or
-make install
+lazykube create production
 ```
 
-**Note:** The default `install` command shows minimal output for a cleaner experience. If you want to see all installation stages and details, use:
+#### `lazykube list`
+Show all available clusters with their status.
 
+**Example:**
 ```bash
-./lazykube install-verbose
+lazykube list
 ```
 
-### 4. Post-installation setup
+#### `lazykube delete <cluster_name>`
+Stop VMs and delete cluster.
 
-After installation completes, run the setup helper to see all configuration steps:
-
+**Example:**
 ```bash
-./lazykube dns-help
-# or
-make dns-help
+lazykube delete production
 ```
 
-This will show you how to:
-1. **Merge kubectl config** - Integrate the new cluster config (`~/.kube/config-k3s-local`) with your existing kubectl configuration
-2. **Configure DNS** - Add entries to `/etc/hosts` to access services via domain names
-3. **Import CA certificate** - Run `./lazykube trust-ca` to avoid SSL warnings in your browser
+#### `lazykube dashboard <cluster_name>`
+Open the Traefik dashboard for a cluster.
 
-**Quick setup example:**
+**Example:**
 ```bash
-# 1. Merge kubeconfig
-cp ./.kube/config ~/.kube/config.backup-$(date +%Y%m%d-%H%M%S)
-KUBECONFIG=~/.kube/config:~/.kube/config-k3s-local kubectl config view --flatten > ~/.kube/config-merged
-mv ~/.kube/config-merged ~/.kube/config
-kubectl config use-context k3s-local
+lazykube dashboard production
+```
 
-# 2. Verify connection
+### Management Commands
+
+#### `lazykube install`
+Install lazykube to system (/usr/local by default).
+
+#### `lazykube uninstall`
+Uninstall lazykube from system.
+
+#### `lazykube version`
+Show version information.
+
+## Configuration
+
+### Cluster Storage
+
+Each cluster's configuration is stored in:
+```
+~/.lazykube/clusters/<cluster_name>/
+├── cluster.json          # Cluster metadata
+├── cluster-config        # VM and SSH configuration
+├── inventory/            # Ansible inventory
+│   └── hosts.yml
+├── group_vars/           # Ansible variables
+│   └── all.yml
+├── kubeconfig/           # Kubernetes configuration
+│   └── config.yml
+└── vms/                  # VM information
+    └── vm_info.txt
+```
+
+### Cluster Metadata
+
+The `cluster.json` file contains:
+- Cluster name and domain
+- Creation timestamp
+- VM information (names, IPs, roles)
+- Status (active, stopped, etc.)
+
+## Post-Installation Setup
+
+### 1. Configure kubectl
+
+```bash
+export KUBECONFIG=~/.lazykube/clusters/my-cluster/kubeconfig/config.yml
 kubectl get nodes
 ```
 
-## 📖 Available Commands
+### 2. Configure Local DNS
 
-You can use either `./lazykube <command>` or `make <command>` syntax.
-
-**Examples:**
-```bash
-./lazykube help          # Show help
-./lazykube configure     # Configure cluster
-./lazykube install       # Install cluster
-./lazykube verify        # Verify cluster status
-```
-
-### All Commands
-
-### Setup and Configuration
-
-- `lazykube configure` / `make configure` - **Configure VM IPs and credentials** (interactive) ⭐
-- `lazykube config` / `make config` - Show current configuration
-- `lazykube check` / `make check` - Verify SSH connectivity
-- `lazykube setup` / `make setup` - Install Ansible dependencies
-
-### Installation
-
-- `lazykube install` / `make install` - **Install complete K3s HA cluster** (minimal output) ⭐
-- `lazykube install-verbose` / `make install-verbose` - Installation with verbose output (shows all stages and details)
-
-### Verification and Debug
-
-- `lazykube verify` / `make verify` - Verify cluster status
-- `lazykube logs` / `make logs` - Show component logs
-- `lazykube dashboard` / `make dashboard` - Open Traefik dashboard
-- `lazykube haproxy-stats` / `make haproxy-stats` - Open HAProxy stats dashboard
-
-### Utilities
-
-- `lazykube dns-help` / `make dns-help` - Show post-installation setup (kubectl merge, DNS, CA certificate)
-- `lazykube kubeconfig` / `make kubeconfig` - Detailed instructions for kubeconfig merge
-- `lazykube trust-ca` / `make trust-ca` - Import CA into system (macOS)
-
-### Cleanup
-
-- `lazykube uninstall` / `make uninstall` - Remove K3s cluster
-- `lazykube clean` / `make clean` - Clean temporary files
-- `lazykube clean-config` / `make clean-config` - Remove configuration
-
-## 🔧 How It Works
-
-### 1. `make configure` generates:
-
-- `.cluster-config` - File with credentials (excluded from git)
-- `inventories/hosts.yml` - Dynamic Ansible inventory
-- Updates `group_vars/all.yml` with IPs
-
-### 2. Example of interactive configuration:
-
-```
-IP Master 1 [192.168.105.46]: 192.168.1.10
-SSH Username Master 1 [admin]: ubuntu
-SSH Password Master 1: ********
-SSH key path Master 1 []: ~/.ssh/id_rsa
-
-IP Master 2 [192.168.105.47]: 192.168.1.11
-SSH Username Master 2 [ubuntu]:
-SSH Password Master 2:
-SSH key path Master 2 [~/.ssh/id_rsa]:
-
-IP Master 3 [192.168.105.48]: 192.168.1.12
-SSH Username Master 3 [ubuntu]:
-SSH Password Master 3:
-SSH key path Master 3 [~/.ssh/id_rsa]:
-
-IP HAProxy [192.168.105.49]: 192.168.1.100
-SSH Username HAProxy [ubuntu]:
-SSH Password HAProxy:
-SSH key path HAProxy [~/.ssh/id_rsa]:
-
-Cluster domain [k3cluster.local]:
-Timezone [Europe/Rome]:
-```
-
-### 3. Automatically generated inventory:
-
-```yaml
----
-all:
-  vars:
-    ansible_python_interpreter: /usr/bin/python3
-    domain: "k3cluster.local"
-    timezone: "Europe/Rome"
-
-  children:
-    k3s_cluster:
-      children:
-        k3s_masters:
-          hosts:
-            master1:
-              ansible_host: 192.168.1.10
-              ansible_user: ubuntu
-              ansible_ssh_private_key_file: ~/.ssh/id_rsa
-              k3s_node_name: k3s-master1
-              is_first_master: true
-            # ...
-```
-
-## 🔐 Security
-
-### Credentials
-
-- `.cluster-config` contains passwords/keys → **excluded from git**
-- Use SSH keys instead of passwords when possible
-- Never commit `inventories/hosts.yml` if it contains passwords
-
-### TLS
-
-- K3s uses TLS for all communications
-- HAProxy uses TCP passthrough (does not terminate TLS)
-- cert-manager generates self-signed certificates
-- The kubeconfig uses `insecure-skip-tls-verify: true` (HAProxy IP not in certificate)
-
-**To avoid SSL warnings in your browser:**
-```bash
-./lazykube trust-ca
-```
-This imports the self-signed CA certificate into your system keychain (macOS). After importing, restart your browser to access HTTPS services without warnings.
-
-## 🐛 Troubleshooting
-
-### Error: Cluster not configured
+Add entries to `/etc/hosts`:
 
 ```bash
-./lazykube configure
+sudo bash -c 'cat >> /etc/hosts << EOF
+
+# K3s Cluster: my-cluster
+<HAPROXY_IP>  traefik.my-cluster.local
+<HAPROXY_IP>  demo.my-cluster.local
+EOF'
 ```
 
-### Error: VMs unreachable
+### 3. Import CA Certificate (Optional)
 
-Test SSH manually:
+To avoid SSL warnings:
 
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@192.168.1.10
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain \
+  ~/.kube/k3s-local-ca.crt
 ```
 
-### TLS Error: certificate is valid for ... not <HAProxy_IP>
+## Dependencies
 
-The generated kubeconfig already uses `insecure-skip-tls-verify: true`. This is normal with HAProxy.
+LazyKube automatically checks and installs:
 
-For permanent fix (reinstall cluster):
+1. **Ansible**: Configuration management
+2. **kubectl**: Kubernetes CLI
+3. **lazylinux**: VM management tool
+
+All dependencies are installed via Homebrew on macOS.
+
+## Networking
+
+### Default IP Ranges
+
+- **VMs**: 192.168.105.50-53
+- **MetalLB Pool**: Defined in cluster configuration
+- **Services**: Exposed via HAProxy on standard ports (80, 443, 6443)
+
+### Ports
+
+- **6443**: Kubernetes API (via HAProxy)
+- **80/443**: HTTP/HTTPS ingress (via HAProxy → Traefik)
+- **8404**: HAProxy stats dashboard
+- **2379/2380**: etcd (internal)
+
+## Troubleshooting
+
+### VM Issues
+
+Check VM status:
+```bash
+~/.lazykube/lazylinux/bin/lazylinux list
+```
+
+### Cluster Connectivity
+
+Test SSH connectivity:
+```bash
+ansible all -i ~/.lazykube/clusters/<cluster_name>/inventory/hosts.yml -m ping
+```
+
+### Kubernetes Issues
+
+Check cluster status:
+```bash
+export KUBECONFIG=~/.lazykube/clusters/<cluster_name>/kubeconfig/config.yml
+kubectl cluster-info
+kubectl get nodes
+kubectl get pods -A
+```
+
+### View Logs
+
+Check component logs:
+```bash
+kubectl logs -n metallb-system -l component=controller
+kubectl logs -n traefik -l app.kubernetes.io/name=traefik
+kubectl logs -n cert-manager -l app=cert-manager
+```
+
+## Advanced Usage
+
+### Custom VM Configuration
+
+Edit cluster configuration before deployment:
+```bash
+vi ~/.lazykube/clusters/<cluster_name>/cluster-config
+```
+
+### Manual Ansible Playbook Execution
 
 ```bash
-ansible-playbook -i inventories/hosts.yml playbooks/reinstall-k3s.yml
+cd /usr/local/lib/lazykube
+ansible-playbook \
+  -i ~/.lazykube/clusters/<cluster_name>/inventory/hosts.yml \
+  playbooks/install-cluster-local.yml
 ```
 
-### HAProxy backend DOWN
+## Architecture Details
 
-Verify master connectivity:
+### Component Flow
 
-```bash
-source .cluster-config
-nc -zv $MASTER1_IP 6443
-nc -zv $MASTER2_IP 6443
-nc -zv $MASTER3_IP 6443
-```
+1. **lazykube CLI** → Validates input, manages workflow
+2. **helpers.sh** → Dependency checks, cluster state management
+3. **provision-vms.sh** → VM creation via lazylinux
+4. **Ansible Playbooks** → K3s and component deployment
+5. **cluster.json** → Persistent cluster state
 
-## 📁 File Structure
+### File Structure
 
 ```
 lazykube/
-├── lazykube                      # Main CLI tool (wrapper for Makefile)
-├── Makefile                      # Automated commands
-├── .cluster-config               # Credentials (git ignored)
-├── .gitignore
-├── README.md
-│
-├── inventories/
-│   └── hosts.yml                # Generated by configure-cluster.sh
-│
-├── group_vars/
-│   └── all.yml                  # Updated by configure-cluster.sh
-│
-├── playbooks/
-│   ├── install-cluster-local.yml
-│   ├── reinstall-k3s.yml
-│   └── regenerate-k3s-certs.yml
-│
-├── roles/
-│   ├── haproxy-local/
-│   ├── k3s-local/
-│   ├── metallb-local/
-│   ├── cert-manager-local/
-│   └── traefik-local/
-│
-└── scripts/
-    └── configure-cluster.sh     # Interactive configuration script
+├── bin/
+│   └── lazykube              # Main CLI script
+├── lib/
+│   ├── scripts/
+│   │   ├── helpers.sh        # Helper functions
+│   │   └── provision-vms.sh  # VM provisioning
+│   ├── playbooks/            # Ansible playbooks
+│   ├── roles/                # Ansible roles
+│   ├── ansible.cfg           # Ansible configuration
+│   └── Makefile              # Legacy make targets
+└── share/
+    ├── templates/            # Configuration templates
+    └── examples/             # Example manifests
 ```
 
-## 🔄 Complete Workflow
+## Contributing
 
-```bash
-# 1. Configure IPs and credentials (once)
-./lazykube configure
-
-# 2. Verify SSH connectivity
-./lazykube check
-
-# 3. Install cluster (~15-20 min)
-./lazykube install
-
-# 4. Post-installation setup
-./lazykube dns-help          # Shows all setup steps
-
-# Follow the instructions displayed to:
-# - Merge kubeconfig (~/.kube/config-k3s-local)
-# - Add DNS entries to /etc/hosts
-# - Import CA certificate: ./lazykube trust-ca
-
-# 5. Verify installation
-kubectl get nodes            # After merging kubeconfig
-./lazykube verify
-
-# 6. Access dashboards (no SSL warnings after trust-ca!)
-./lazykube haproxy-stats  # http://<HAPROXY_IP>:8404/stats
-./lazykube dashboard      # https://traefik.k3cluster.local/dashboard/
-```
-
-## 📚 Additional Documentation
-
-- [HAPROXY-SETUP.md](HAPROXY-SETUP.md) - Detailed HAProxy guide
-- [FIX-TLS-CERTIFICATE.md](FIX-TLS-CERTIFICATE.md) - TLS troubleshooting
-- [QUICK-START-HAPROXY.md](QUICK-START-HAPROXY.md) - Manual quick start
+Contributions are welcome! Please submit pull requests or open issues on GitHub.
 
 ## License
 
-MIT
+MIT License - see LICENSE file for details
+
+## Links
+
+- GitHub: https://github.com/antoniopicone/lazykube
+- lazylinux: https://github.com/antoniopicone/lazylinux
+
+## Version History
+
+### v2.0.0 (Current)
+- Complete refactor with new command structure
+- Integrated lazylinux for VM management
+- Multi-cluster support
+- Improved state management
+- Enhanced dependency handling
+
+### v1.0.0
+- Initial release
+- Manual VM configuration
+- Single cluster support
